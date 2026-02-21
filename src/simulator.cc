@@ -10,29 +10,20 @@
 
 class Event {
 public:
-    NodeID const node_id; 
-    double const time;
-    Event(NodeID node_id, double time) : node_id(node_id), time(time) { }
-    virtual ~Event() = default;
-    virtual void process(std::shared_ptr<Node> n) = 0;
-}
-
-class InterNodeEvent : public Event {
-public:
     NodeID const receiver;
     double const time;
 
-    InterNodeEvent(NodeID r, double t) : receiver(r), time(t) { }
-    virtual ~InterNodeEvent() = default;
+    Event(NodeID r, double t) : receiver(r), time(t) { }
+    virtual ~Event() = default;
     virtual void process(std::shared_ptr<Node> n) = 0;
 };
 
-class DeliveryEvent : public InterNodeEvent {
+class DeliveryEvent : public Event {
 public:
     std::shared_ptr<Sendable> object;
     NodeID from;
     DeliveryEvent(NodeID from, std::shared_ptr<Sendable> object, NodeID receiver, double t)
-        : InterNodeEvent(receiver, t), object(object), from(from)
+        : Event(receiver, t), object(object), from(from)
     {
     }
     void process(std::shared_ptr<Node> n) override
@@ -40,16 +31,16 @@ public:
         object->receive(n, from);
     }
 };
-std::shared_ptr<InterNodeEvent> create_synthetic_delivery_event(std::shared_ptr<Sendable> object, NodeID receiver, double time)
+std::shared_ptr<Event> create_synthetic_delivery_event(std::shared_ptr<Sendable> object, NodeID receiver, double time)
 {
     return std::make_shared<DeliveryEvent>(NO_NODE_ID, object, receiver, time);
 }
 
-class TimedEvent : public InterNodeEvent {
+class TimedEvent : public Event {
 public:
     std::shared_ptr<Timer> trigger;
     TimedEvent(NodeID receiver, std::shared_ptr<Timer> trigger, double time)
-        : InterNodeEvent(receiver, time), trigger(trigger)
+        : Event(receiver, time), trigger(trigger)
     {
     }
     void process(std::shared_ptr<Node> n) override
@@ -57,14 +48,12 @@ public:
         trigger->trigger(n);
     }
 };
-std::shared_ptr<InterNodeEvent> create_synthetic_timed_event(std::shared_ptr<Timer> timer, NodeID receiver, double time)
+std::shared_ptr<Event> create_synthetic_timed_event(std::shared_ptr<Timer> timer, NodeID receiver, double time)
 {
     return std::make_shared<TimedEvent>(receiver, timer, time);
 }
 
-
-
-bool EventComparator::operator()(std::shared_ptr<InterNodeEvent> e1, std::shared_ptr<InterNodeEvent> e2)
+bool EventComparator::operator()(std::shared_ptr<Event> e1, std::shared_ptr<Event> e2)
 {
     return e1->time > e2->time;
 }
@@ -74,7 +63,7 @@ void Simulator::deliver_sendable(NodeID sender, std::shared_ptr<Sendable> sendab
     auto const& link_delay = link_delays[sender][receiver];
     double receive_time = current_time + link_delay(rng, sendable->size_kb());
 
-    std::shared_ptr<InterNodeEvent> e = std::make_shared<DeliveryEvent>(sender, sendable, receiver, receive_time);
+    std::shared_ptr<Event> e = std::make_shared<DeliveryEvent>(sender, sendable, receiver, receive_time);
     event_queue.push(e);
 }
 
