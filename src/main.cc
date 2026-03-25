@@ -24,9 +24,12 @@ int main(int argc, char const* argv[])
      */
     size_t nr_nodes;
     double z_0, z_1, cpu_ratio, txn_interarrival_time_mean, global_block_interarrival_time_mean, duration;
+    std::string overlay_protocol;
+    std::string graph_density = "dense";
+    size_t beta = 3;
     unsigned int graph_seed, simulator_seed;
-    if (argc != 8 && argc != 10) {
-        std::cerr << "Usage: " << argv[0] << " <nr_nodes> <z_0> <z_1> <cpu_ratio> <txn_interarrival_time_mean> <global_block_interarrival_time_mean> <duration> [graph_seed simulator_seed]\n";
+    if (argc < 9 || argc > 14) {
+        std::cerr << "Usage: " << argv[0] << " <nr_nodes> <z_0> <z_1> <cpu_ratio> <txn_interarrival_time_mean> <global_block_interarrival_time_mean> <duration> <overlay_protocol> [sparse|moderate|dense] [beta] [graph_seed simulator_seed]\n";
         return 0;
     } else {
         nr_nodes = std::stoull(argv[1]);
@@ -36,14 +39,39 @@ int main(int argc, char const* argv[])
         txn_interarrival_time_mean = std::stod(argv[5]);
         global_block_interarrival_time_mean = std::stod(argv[6]);
         duration = std::stod(argv[7]);
+        overlay_protocol = argv[8];
 
-        if (argc == 10) {
-            graph_seed = std::stoull(argv[8]);
-            simulator_seed = std::stoull(argv[9]);
+        int next_arg = 9;
+        if (next_arg < argc && (std::string(argv[next_arg]) == "sparse" || std::string(argv[next_arg]) == "moderate" || std::string(argv[next_arg]) == "dense")) {
+            graph_density = argv[next_arg];
+            next_arg++;
+        }
+        if (next_arg < argc) {
+            try {
+                size_t val = std::stoull(argv[next_arg]);
+                if (val >= 1 && val <= 10) {
+                    beta = val;
+                    next_arg++;
+                }
+            } catch (...) {}
+        }
+        if (next_arg + 1 < argc) {
+            graph_seed = std::stoull(argv[next_arg]);
+            simulator_seed = std::stoull(argv[next_arg + 1]);
         } else {
             graph_seed = std::random_device {}();
             simulator_seed = std::random_device {}();
         }
+    }
+
+    bool use_kadcast;
+    if (overlay_protocol == "Kadcast" || overlay_protocol == "kadcast")
+        use_kadcast = true;
+    else if (overlay_protocol == "Broadcast" || overlay_protocol == "broadcast" || overlay_protocol == "Classic" || overlay_protocol == "classic")
+        use_kadcast = false;
+    else {
+        std::cerr << "Unsupported overlay protocol: " << overlay_protocol << "\n";
+        return 1;
     }
 
     /*
@@ -68,9 +96,15 @@ int main(int argc, char const* argv[])
     logfile << "*** " << output_dir << " ***\n";
     logfile << "*** [graph_rng seed=" << graph_seed << ", simulator_rng seed=" << simulator_seed << "] ***\n";
     logfile << "*** Invocation: ";
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < argc; ++i)
         logfile << argv[i] << " ";
-    logfile << graph_seed << ' ' << simulator_seed << " ***\n";
+    logfile << "***\n";
+    logfile << "*** graph_density=" << graph_density << " beta=" << beta << " ***\n";
+
+    /*
+     * graph random number generator
+     */
+    std::mt19937 graph_rng(graph_seed);
 
     /*
      * simulator random number generator
@@ -82,7 +116,7 @@ int main(int argc, char const* argv[])
     /*
      * generate nodes
      */
-    std::set<std::shared_ptr<ClassicNode>> nodes = generate_nodes(simulator, nr_nodes, z_0, z_1, cpu_ratio, txn_interarrival_time_mean, global_block_interarrival_time_mean);
+    std::set<std::shared_ptr<ClassicNode>> nodes = generate_nodes(simulator, nr_nodes, z_0, z_1, cpu_ratio, txn_interarrival_time_mean, global_block_interarrival_time_mean, use_kadcast, beta, graph_rng);
     std::set<NodeID> node_ids;
     std::map<NodeID, std::shared_ptr<ClassicNode>> node_id_to_node;
     for (auto node : nodes) {
@@ -91,39 +125,44 @@ int main(int argc, char const* argv[])
     }
 
     /*
-     * graph random number generator
-     */
-    std::mt19937 graph_rng(graph_seed);
-
-    /*
      * generate network
+     * sparse:   degree [3, 6]   — resource-constrained / poorly-connected
+     * moderate: degree [10, 25]  — moderately-connected / typical P2P network
+     * dense:    degree [50, 80] — heavily-connected / datacenter P2P network
      */
-    auto adj_list = generate_random_undirected_graph(graph_rng, node_ids, 3, 6);
+    size_t min_deg, max_deg;
+    if (graph_density == "sparse") {
+        min_deg = 3;
+        max_deg = 6;
+    } else if (graph_density == "moderate") {
+        min_deg = 10;
+        max_deg = 25;
+    } else {
+        min_deg = 50;
+        max_deg = 80;
+    }
+    auto adj_list = generate_random_undirected_graph(graph_rng, node_ids, min_deg, max_deg);
 
     write_network_to_dot_file(output_dir + "/network.dot", adj_list);
 
     /*
-     * // both constant for a link
-     * progapation_delay    ~ U([10.0ms, 500.0ms])
-     * link_speed           = 100kb/ms if both fast, else 5kb/ms
-     *
-     * transmission_delay   = msg_len / link_speed
-     * queueing_delay       ~ Exp(link_speed / 96.0kb)  // since mean of exp dist is 1/lambda
+        * per-link physical network parameters (Bitcoin-realistic)
+        *
+        * propagation_delay  ~ U([5.0ms, 300.0ms])    (Internet RTT estimates, cf. [48] in KADcast-NG)
+        * link_speed          = 100 Mbit/s = 12.5 KB/ms    if both fast (well-connected datacenter nodes)
+        *                     = 5 Mbit/s  = 0.625 KB/ms    if either is slow (residential connections)
+        *
+        * the simulator network layer applies hop-by-hop routing with
+        * P parallel upload channels per node (bandwidth shared equally).
+        * receive_time = upload_start + propagation_delay + msg_len / link_speed
      */
-    auto generate_link_delay = [&graph_rng](ClassicNode const& n1, ClassicNode const& n2) -> Simulator::LinkDelay {
-        std::uniform_real_distribution<double> propagation_delay_dist(10.0, 500.0);
+    auto generate_link_delay = [&graph_rng](ClassicNode const& n1, ClassicNode const& n2) -> Simulator::LinkProperties {
+        std::uniform_real_distribution<double> propagation_delay_dist(5.0, 300.0);
         double propagation_delay = propagation_delay_dist(graph_rng);
 
-        double link_speed = (!n1.is_slow_node && !n2.is_slow_node ? 100.0 : 5.0);
+        double link_speed = (!n1.is_slow_node && !n2.is_slow_node ? 12.5 : 0.625);
 
-        return [propagation_delay, link_speed](std::mt19937& sim_rng, size_t msg_len) -> double {
-            double transmission_delay = msg_len / link_speed;
-
-            std::exponential_distribution<double> queueing_delay_dist(link_speed / 96.0);
-            double queueing_delay = queueing_delay_dist(sim_rng);
-
-            return propagation_delay + transmission_delay + queueing_delay;
-        };
+        return { propagation_delay, link_speed };
     };
 
     /*
@@ -136,6 +175,13 @@ int main(int argc, char const* argv[])
     }
     auto links = generate_link_delays(nodes, adj_list, generate_link_delay);
     simulator.add_links(links);
+
+    /*
+     * set per-node upload speeds for direct overlay delivery
+     * fast nodes: 12.5 KB/ms (100 Mbit/s), slow nodes: 0.625 KB/ms (5 Mbit/s)
+     */
+    for (auto const& node : nodes)
+        simulator.set_node_upload_speed(node->node_id, node->is_slow_node ? 0.625 : 12.5);
 
     /*
      * create initial events
@@ -166,10 +212,18 @@ int main(int argc, char const* argv[])
      */
     std::map<BlockID, std::set<BlockID>> global_block_tree;
     std::map<BlockID, NodeID> global_block_miners;
+
+    /*
+     * per-node block arrival times for propagation delay computation
+     */
+    std::map<NodeID, std::map<BlockID, double>> per_node_arrival_times;
+
     for (auto const& node : nodes) {
         auto block_tree = node->collect_block_tree();
         auto block_arrival_times = node->collect_block_arrival_times();
         auto block_miners = node->collect_block_miners();
+
+        per_node_arrival_times[node->node_id] = block_arrival_times;
 
         write_node_block_tree_to_dot_file(output_dir + "/block_tree_of_node_" + std::to_string(node->node_id) + ".dot", block_tree, block_arrival_times);
 
@@ -183,6 +237,36 @@ int main(int argc, char const* argv[])
 
         global_block_miners.insert(block_miners.begin(), block_miners.end());
     }
+
+    /*
+     * compute per-block creation time (= arrival time at the miner)
+     * then compute propagation delay = arrival_time_at_node - creation_time
+     */
+    std::map<BlockID, double> block_creation_times;
+    for (auto const& [block_id, miner_id] : global_block_miners) {
+        auto node_it = per_node_arrival_times.find(miner_id);
+        if (node_it != per_node_arrival_times.end()) {
+            auto block_it = node_it->second.find(block_id);
+            if (block_it != node_it->second.end())
+                block_creation_times[block_id] = block_it->second;
+        }
+    }
+
+    std::map<BlockID, std::vector<double>> block_propagation_delays;
+    for (auto const& [block_id, creation_time] : block_creation_times) {
+        std::vector<double> delays;
+        for (auto const& [node_id, arrival_map] : per_node_arrival_times) {
+            auto it = arrival_map.find(block_id);
+            if (it != arrival_map.end()) {
+                double delay = it->second - creation_time;
+                if (delay > 0.0)
+                    delays.push_back(delay);
+            }
+        }
+        if (!delays.empty())
+            block_propagation_delays[block_id] = delays;
+    }
+
     std::map<NodeID, std::pair<BlockID, std::set<BlockID>>> node_positions_in_block_tree;
     for (auto const& node : nodes)
         node_positions_in_block_tree[node->node_id] = node->collect_frontier();
@@ -258,20 +342,29 @@ int main(int argc, char const* argv[])
                 blocks_in_longest_chain_fast_highcpu += nr;
         }
     }
-    OutputStats output_stats {
-        global_block_miners.size(),
-        blocks_fast_highcpu,
-        blocks_fast_lowcpu,
-        blocks_slow_highcpu,
-        blocks_slow_lowcpu,
-        stats.chain_terminal_lengths[stats.longest_chain_end],
-        blocks_in_longest_chain_fast_highcpu,
-        blocks_in_longest_chain_fast_lowcpu,
-        blocks_in_longest_chain_slow_highcpu,
-        blocks_in_longest_chain_slow_lowcpu,
-        branch_length_distribution,
-        chain_length_distribution,
-    };
+    OutputStats output_stats {};
+    output_stats.overlay_protocol = overlay_protocol;
+    output_stats.graph_density = graph_density;
+    output_stats.nr_nodes = nr_nodes;
+    output_stats.duration = duration;
+    output_stats.total_blocks = global_block_miners.size();
+    output_stats.blocks_fast_highcpu = blocks_fast_highcpu;
+    output_stats.blocks_fast_lowcpu = blocks_fast_lowcpu;
+    output_stats.blocks_slow_highcpu = blocks_slow_highcpu;
+    output_stats.blocks_slow_lowcpu = blocks_slow_lowcpu;
+    output_stats.longest_chain_length = stats.chain_terminal_lengths[stats.longest_chain_end];
+    output_stats.blocks_in_longest_chain_fast_highcpu = blocks_in_longest_chain_fast_highcpu;
+    output_stats.blocks_in_longest_chain_fast_lowcpu = blocks_in_longest_chain_fast_lowcpu;
+    output_stats.blocks_in_longest_chain_slow_highcpu = blocks_in_longest_chain_slow_highcpu;
+    output_stats.blocks_in_longest_chain_slow_lowcpu = blocks_in_longest_chain_slow_lowcpu;
+    output_stats.branch_length_distribution = branch_length_distribution;
+    output_stats.chain_length_distribution = chain_length_distribution;
+    output_stats.total_messages_sent = simulator.get_total_messages_sent();
+    output_stats.total_traffic_kb = simulator.get_total_traffic_kb();
+    output_stats.block_propagation_delays = block_propagation_delays;
+    output_stats.stale_blocks = output_stats.total_blocks > output_stats.longest_chain_length
+        ? output_stats.total_blocks - output_stats.longest_chain_length
+        : 0;
     write_stats_to_py_file(output_dir + "/stats.py", output_stats);
 
     return 0;

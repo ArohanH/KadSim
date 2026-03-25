@@ -9,9 +9,45 @@
 NodeID Node::next_node_id = 0;
 double constexpr BLOCK_REWARD = 50.0;
 
-ClassicNode::ClassicNode(Simulator& simulator, bool is_slow_node, bool is_lowcpu_node, double txn_interarrival_time_mean, double block_interarrival_time_mean)
-    : Node(simulator, txn_interarrival_time_mean, block_interarrival_time_mean), is_slow_node(is_slow_node), is_lowcpu_node(is_lowcpu_node)
+ClassicNode::ClassicNode(Simulator& simulator, bool is_slow_node, bool is_lowcpu_node, double txn_interarrival_time_mean, double block_interarrival_time_mean, double block_validation_throughput_kb_per_ms)
+    : Node(simulator, txn_interarrival_time_mean, block_interarrival_time_mean, block_validation_throughput_kb_per_ms), is_slow_node(is_slow_node), is_lowcpu_node(is_lowcpu_node)
 {
+}
+
+void ClassicNode::forward_block(std::shared_ptr<Block> block, NodeID from)
+{
+    for (auto neighbor : simulator.get_neighbors(node_id))
+        if (neighbor != from)
+            simulator.deliver_sendable(node_id, block, neighbor);
+}
+
+void ClassicNode::forward_txn(std::shared_ptr<Txn> txn, NodeID from)
+{
+    for (auto neighbor : simulator.get_neighbors(node_id))
+        if (neighbor != from)
+            simulator.deliver_sendable(node_id, txn, neighbor);
+}
+
+void ClassicNode::announce_local_block(std::shared_ptr<Block> block)
+{
+    for (auto neighbor : simulator.get_neighbors(node_id))
+        simulator.deliver_sendable(node_id, block, neighbor);
+}
+
+void ClassicNode::announce_local_txn(std::shared_ptr<Txn> txn)
+{
+    for (auto neighbor : simulator.get_neighbors(node_id))
+        simulator.deliver_sendable(node_id, txn, neighbor);
+}
+
+bool ClassicNode::knows_block(BlockID block_id) const
+{
+    return all_block_info.count(block_id) > 0;
+}
+
+bool ClassicNode::knows_txn(TxnID txn_id) const
+{
+    return all_txns.count(txn_id) > 0;
 }
 
 std::map<BlockID, std::set<BlockID>> ClassicNode::collect_block_tree() const
@@ -90,7 +126,8 @@ void ClassicNode::start_mining_new_block()
      * get mempool txns that are valid
      */
     for (auto [txn_id, txn] : mempool) {
-        assert(frontier_block_info[longest_chain_frontier_block_id].txns.count(txn->txn_id) == 0);
+        if (frontier_block_info[longest_chain_frontier_block_id].txns.count(txn->txn_id) > 0)
+            continue;
         if (balance.count(txn->payer) == 0 || balance[txn->payer] < txn->amount)
             continue;
         if (txns_to_be_in_new_block.size() == Block::MAX_NR_TXNS)
@@ -280,9 +317,7 @@ void ClassicNode::receive(std::shared_ptr<Block> block, NodeID from)
     /*
      * loopless block forwarding
      */
-    for (auto neighbor : simulator.get_neighbors(node_id))
-        if (neighbor != from)
-            simulator.deliver_sendable(node_id, block, neighbor);
+    forward_block(block, from);
 
     /*
      * clear out any children that were orphans
@@ -305,9 +340,7 @@ void ClassicNode::receive(std::shared_ptr<Txn> t, NodeID from)
     /*
      * loopless txn forwarding
      */
-    for (auto neighbor : simulator.get_neighbors(node_id))
-        if (neighbor != from)
-            simulator.deliver_sendable(node_id, t, neighbor);
+    forward_txn(t, from);
 }
 
 void ClassicNode::process(std::shared_ptr<CreateTxn> create_txn)
@@ -331,8 +364,7 @@ void ClassicNode::process(std::shared_ptr<CreateTxn> create_txn)
     /*
      * send txn to neighbors
      */
-    for (auto neighbor : simulator.get_neighbors(node_id))
-        simulator.deliver_sendable(node_id, txn, neighbor);
+    announce_local_txn(txn);
 }
 
 // Arohan
@@ -365,8 +397,7 @@ void ClassicNode::process(std::shared_ptr<MineBlock> mine_block)
      * send mined block to neighbors
      */
     simulator.log(node_id, "Mined block " + std::to_string(mined_block->block_id) + " from parent " + std::to_string(mined_block->parent_block_id));
-    for (auto neighbor : simulator.get_neighbors(node_id))
-        simulator.deliver_sendable(node_id, mined_block, neighbor);
+    announce_local_block(mined_block);
 
     /*
      * erase block txns from mempool

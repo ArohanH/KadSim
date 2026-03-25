@@ -1,0 +1,42 @@
+Simulation Notes: Gossip vs Kadcast with Network Modeling
+
+1. Problem with Unstructured (Gossip) Propagation
+- Flooding causes duplicate messages
+- High message complexity O(N × degree)
+- Leads to congestion and increased delay
+
+2. Latency Model
+L_ij = rho_ij + |m|/c_ij + d_ij
+- rho: propagation delay (constant)
+- |m|/c: transmission delay
+- d_ij: queuing delay (depends on contention)
+
+3. Key Fix: Model Queuing Delay Properly
+- Maintain link_free_time per link
+- start = max(current_time, link_free_time)
+- queue_delay = start - current_time
+- update link_free_time after transmission
+
+4. Hop-by-Hop Simulation (Critical)
+- Do NOT compute full path at once
+- Simulate each hop when message arrives
+- Captures intermediate contention correctly
+
+5. Network vs Blockchain Layers
+- Network layer: routing, delays, queues
+- Blockchain layer: validation, forwarding
+- Intermediate nodes act ONLY as routers
+
+6. Shared Link Contention
+- Same link used by transactions and blocks
+- One shared queue per link
+- Cross-traffic affects delays
+
+7. Kadcast vs Gossip
+- Gossip: many redundant transmissions → congestion
+- Kadcast: structured broadcast → fewer messages → less delay
+
+8. Correct Mental Model
+Overlay (who sends) + Network (how long it takes)
+- Keep network same, change only overlay
+

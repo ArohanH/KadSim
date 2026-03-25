@@ -1,0 +1,1115 @@
+                                                                                                                                              1
+
+
+
+
+         Kadcast-NG: A Structured Broadcast Protocol
+                  for Blockchain Networks
+                                                     Elias Rohrer and Florian Tschorsch
+
+
+
+   Abstract—In order to propagate transactions and blocks,                     changes that depart even further from the Nakamoto consen-
+today’s blockchain systems rely on unstructured peer-to-peer                   sus [2, 3, 4]. Furthermore, it has been shown that the block
+overlay networks. In such networks, broadcast is known to be                   propagation delay has severe effects on the consistency of
+an inefficient operation in terms of message complexity and
+overhead. In addition to the impact on the system performance,                 blockchain networks, leading to higher rates of stale blocks
+inefficient or delayed block propagation may have severe conse-                and blockchain forks [5]. As this opens opportunities for
+quences regarding security and fairness of the consensus layer. In             fraud [6, 7], alleviating the network-layer deficiencies is not
+contrast, the Kadcast protocol is a structured peer-to-peer proto-             only a matter of performance, but also a pressing issue of
+col for block and transaction propagation in blockchain networks.              fairness and security. While it has been shown that unsolicited
+Kadcast utilizes the well-known overlay topology of Kademlia to
+realize an efficient broadcast operation with tunable overhead.                block propagation has the largest impact on the stale block
+We study the security and privacy of the Kadcast protocol based                rate [5], it leads to flooding the network with block data,
+on probabilistic models and analyze its resilience to packet losses            which the current networking paradigm cannot handle. The
+and node failures. Moreover, we evaluate Kadcast’s block delivery              emergence of third-party relay networks [8, 9] emphasize the
+performance, broadcast reliability, efficiency, and security based             need for an improved propagation mechanism. We however
+on advanced network simulations. Lastly, we introduce a QUIC-
+based prototype implementation of the Kadcast protocol and                     consider them orthogonal to our work, because they do not
+show its merits through deployment in a global-scale cloud-based               address the inherent shortcomings of blockchain networks. In
+testbed.                                                                       fact, many of the improvement proposals [10, 11, 12, 13] are
+   Index Terms—blockchain, peer-to-peer networks, broadcast                    compatible with our approach presented here.
+                                                                                     Kadcast and Kadcast-NG: Kadcast [14] is a new struc-
+                                                                               tured broadcast protocol for blockchain networks based on
+                          I. I NTRODUCTION                                     Kademlia [15]. Kadcast utilizes the structured overlay archi-
+
+B     ITCOIN [1] fundamentally challenged the role of banks
+      by enabling decentralized money transfer on the Internet.
+It builds upon a peer-to-peer network to implement an elec-
+                                                                               tecture of Kademlia, which can be thought as a binary tree, to
+                                                                               delegate broadcast responsibilities for subtrees with decreasing
+                                                                               height. This procedure eventually leads to forwarding data
+tronic cash system, where nodes can interact directly without                  along a spanning tree and under the assumption of non-
+intermediaries. Following its genesis in 2008, a high number                   faulty nodes yields an highly efficient broadcast. In order to
+of blockchain networks emerged. In these systems, nodes                        deal with faulty and malicious nodes, however, we introduce
+may issue transactions by broadcasting them in the overlay                     mitigation strategies and reliability mechanisms, most notably,
+network. Validator nodes collect and verify transactions and                   a redundant broadcast strategy. This allows Kadcast to main-
+periodically consolidate them into blocks, which are appended                  tain its broadcast efficiency and offers tunable parameters to
+to a replicated, immutable ledger—the blockchain. Blocks are                   adjust trade-offs with respect to propagation delays, overhead,
+broadcast in the network as well, which gives every node the                   reliability, security, and privacy.
+capability to verify correctness locally. That is, nodes run a                    In this work, we complement and extend the study of the
+distributed agreement protocol to enable state replication.                    Kadcast protocol, address some weaknesses, and explore the
+      Problem Statement: Broadcast is accordingly the most                     feasibility of a real-world adoption. We propose a number
+commonly used network operation in blockchain networks.                        of protocol extensions to further harden Kadcast in the face
+Current implementations are typically based on unstructured                    of security and privacy threats. In particular, we show that
+overlay networks, which is not necessarily favorable for this                  Kadcast achieves a high degree of reliability and resilience
+kind of operation: while being relatively robust, broadcast in                 when confronted with random and adversarial node failures.
+unstructured overlays suffers from high message overhead, as                   Moreover, we provide an analysis of transaction privacy.
+duplicates are introduced to the system. To reduce the load,                      In addition, we developed Kadcast-NG, a QUIC-based [16]
+many networks spread block messages only by gossiping to a                     prototype implementation of the Kadcast protocol. Kadcast-
+subset of neighbors, which in turn might introduce additional                  NG resolves the weaknesses our initial UDP-based approach,
+propagation delays.                                                            most notably reliability and flow control, without sacrificing
+   This inefficiency of the utilized network protocols is a                    fast and lightweight message exchanges (cf. 0-RTT session
+limiting factor for innovations striving for higher transaction                resumption). We use our Kadcast-NG prototype to evaluate the
+rates, such as increased limits for block sizes, block rates, or               approach in global-scale testbed hosted by Google Compute
+                                                                               Cloud. Our evaluations show that Kadcast distributes blocks
+  The authors are with the Distributed Security Infrastructures Group, Tech-
+nical University of Berlin.                                                    significantly faster than the currently deployed blockchain
+E-mail: elias.rohrer@tu-berlin.de and florian.tschorsch@tu-berlin.de           protocols in both simulated scenarios and real-world deploy-
+                                                                                                                                     2
+
+
+
+ments. Kadcast furthermore increases the efficiency of block        to their local ledger state. While blockchain protocols have
+propagation, making room to introduce additional features           been proven to be consistent in the partially synchronous
+such as unsolicited block push. Our simulation results also         network model, they are based on the assumption that blocks
+indicate that it achieves similar, often better, security results   are delivered in a timely fashion, i.e., faster than a propagation
+in terms of the stale block rate.                                   delay limit [19]. As this restricts the interval in which new
+      Contributions: Our key contributions can be summarized        blocks of a certain size may be safely issued, blockchain
+as follows: (i) We present an efficient broadcast protocol          scalability and consensus security have been shown to depend
+for blockchain networks, which utilizes Kademlia’s structured       on the performance and reliability of the network [2, 5].
+architecture. (ii) We introduce parallelization to improve the         Currently, most blockchain networks employ a network
+reliability and resilience of Kadcast in a completely adjustable    stack based on an unstructured overlay construction, to which
+and predictable way. (iii) We discuss attack vectors and            we in the following refer to as the vanilla approach. When
+provide mitigation strategies against Sybil and Eclipse attacks,    joining such an unstructured overlay network, nodes retrieve
+and analyze the network’s resilience to adversarial nodes           the addresses of a number of other participants by the means
+obstructing block delivery or trying to deanonymize transac-        of an adequate bootstrapping mechanism. Then, they establish
+tion originators. (iv) We conduct a comprehensive simulation        TCP connections to a random subset of neighbor nodes
+study and evaluate the performance, reliability, efficiency, and    R ⊂ N . As nodes are only able to communicate to the rest
+security of Kadcast in comparison to a vanilla blockchain           of the peer-to-peer network via these neighbors, messages
+protocol, which generalizes the currently prevalent networking      are passed hop-by-hop in a store-and-forward manner. In
+paradigm. (v) We provide Kadcast-NG, a prototypical imple-          particular, upon arrival of new transactions and blocks, each
+mentation, and confirm its benefits through comparative real-       node first stores them in local memory, verifies their validity
+world deployment in a global testbed.                               based on its current blockchain state, and then forwards them
+   While this paper is based on our introduction of Kad-            to adjacent nodes in the network. To ensure timely message
+cast [14], it complements and extends the contributions signif-     delivery via the shortest path, the messages are advertised to
+icantly. Specifically, we discuss security threats and mitigation   all neighbors, which then follow the same protocol. However,
+strategies, propose ID space randomization, conduct a privacy       while this propagation method indeed covers the shortest path,
+analysis, and extend the simulation study by implementing and       it actually covers all paths in the network, which potentially
+evaluating compact blocks [10] and other messaging schemes.         introduces a large amount of superfluous messages. Therefore,
+Most notably, though, we developed Kadcast-NG including a           this kind of broadcast operation exhibits a high message
+pluggable prototype, set up a global testbed, and performed a       complexity (O(N · R)), which has been shown to have severe
+real-world evaluation.                                              consequences on network scalability in the past [20].
+      Structure: The remainder of this paper is structured             Therefore, some blockchain networks reduce traffic by
+as follows. First, we describe primitives of information dis-       introducing alternative messaging patterns, such as request-
+semination currently found in the blockchain landscape in           response or compact block [10] propagation schemes. How-
+Section II. In Section III, we present the Kadcast protocol and     ever, while such schemes may reduce the network utilization,
+discuss its adjustable redundancy. Subsequently, we analyze         they also add at least one round-trip time (RTT) per hop to
+Kadcast’s security and privacy, and discuss various threats and     the message propagation delay. Such delayed block propaga-
+mitigation strategies in Section IV. We present our findings        tion has been shown before to be unfavorable compared to
+from the simulative evaluation in Section V, and introduce the      unsolicited block propagation [5], if the network is capable of
+results of our testbed deployment in Section VI. In Section VII,    handling the increased load. However, in the vanilla case of
+we discuss related work, before we conclude the paper in            an unstructured overlay network, unsolicited block relay would
+Section VIII.                                                       amount to blindly flooding the network. As a consequence of
+                                                                    the ensuing congestion, blockchain networks would likely face
+                                                                    degraded block propagation performance and serious issues
+             II. I NFORMATION D ISSEMINATION
+                                                                    regarding the consensus stability.
+                 IN B LOCKCHAIN N ETWORKS
+                                                                       For more detailed information on the networking layer
+   The central purpose of blockchain protocols is to keep           of Bitcoin [1] and Ethereum [21], we refer the reader to
+track of the current state of accounts, which are bound             literature [22].
+to cryptographic key pairs. To this end, new transactions
+are disseminated in the peer-to-peer network, whereby they
+                                                                                   III. T HE K ADCAST P ROTOCOL
+reach validator nodes. Elected validators (a.k.a. round leaders)
+collect and verify the transactions, decide on an authorita-           Kadcast is based on Kademlia [15], a distributed hash
+tive transaction ordering, and finally batch them into blocks,      table (DHT) design that is typically used for efficient lookup
+i.e., updates to the global blockchain state. Depending on          procedures. Kadcast, however, makes use of Kademlia’s over-
+the system specifications, leaders may be elected by some           lay structure to enable an efficient broadcast operation. In
+kind of Byzantine fault tolerant consensus mechanism, e.g.,         the following, we describe the overlay construction and the
+Nakamoto-style Proof-of-Work [1], Proof-of-Stake [17], or           broadcast algorithm as the two main building blocks of our
+PBFT [18]. After their creation, blocks are broadcast to all        approach. Moreover, we introduce means to improve the
+nodes in the network, which verify them and apply the updates       performance, reliability, and resilience of Kadcast.
+                                                                                                                                                                          3
+
+
+
+                                                                                                          bias towards fresh, potentially malicious peers, which hardens
+                                   1                            0                                         the network against security issues, such as the eclipse attacks
+                                                                                                          described in [23].
+                  1       0                                              1            0                      When a node first joins the network, it has to know
+                                                                                                          the address of at least one bootstrapping node. It therefore
+         1   0                 1        0                   1       0                      1    0         sends PING messages to known nodes to check whether they
+                                                                                                          are actually online. Additionally, PING transmits the sending
+   1 0           1 0    1 0                 1 0      1 0                1 0          1 0            1 0   node’s routing information to the recipient, thereby distributing
+                                                                                                          its existence in the network. In fact, similar patterns can be
+                                                                                                          found throughout the protocol, where every seen message
+     B0          B1                B2                                         B3
+    h = 0
+                                                                                                          updates not only the sender’s but also the recipient’s buckets.
+             h = 1
+                        h = 2
+                                                                             h = 3                        This soft-state protocol design allows for a very lightweight
+             h = 0            h = 1         h = 0
+                                                                     h = 2
+                                                                                           h = 1
+                                                                                                h = 0     overlay membership management that keeps the footprint of
+                       h = 0                        h = 0            h = 1       h = 0                    the required information base to a minimum.
+                                                                    h = 0                                    After the initial bootstrapping step, each Kadcast node
+                                                                                                          begins discovering the network to update its routing infor-
+Figure 1: Example broadcast initiated by node 1111 (β = 1).
+                                                                                                          mation, which it repeats periodically throughout its lifetime.
+Colors indicate node distances in the spanning tree, relative to
+                                                                                                          Initially, the joining node looks up its own ID, which returns
+the initiator.
+                                                                                                          a set of nodes closely positioned to its own network location.
+                                                                                                          Moreover, each node periodically refreshes every bucket it has
+A. Overlay Construction
+                                                                                                          not seen some activity from in the last hour: for each such
+   Kademlia is a peer-to-peer protocol in which nodes form                                                bucket, it picks a random ID with appropriate distance and
+a structured overlay network. Nodes in the network are                                                    performs a look up to populate its buckets with fresh routing
+addressed by unique L-bit binary node identifiers, in the                                                 information.
+following denoted as ID, which are generated upon joining                                                    The lookup procedure allows a node to retrieve a set of k
+the network. The ID determines a node’s position in a binary                                              nodes closest to a specific ID in the address space. The proce-
+routing tree that builds the foundation of Kademlia’s overlay.                                            dure of finding the k closest nodes is carried out by iteratively
+An example of such a tree for a 4-bit address space is                                                    narrowing down the search space and issuing FIND_NODE
+shown in Figure 1. Nodes use their local view to traverse                                                 messages to nodes which are closer to the ID. To this end,
+the network structure efficiently, yielding a message com-                                                (1) the node looks up the α closest nodes with respect to the
+plexity of O(N ). To this end, nodes maintain routing state                                               XOR-metric in its own buckets. (2) It queries these α nodes
+and organize known nodes in so-called k-buckets, storing                                                  for the ID by sending FIND_NODE messages. (3) The queried
+triplets (ip_addr, port, ID). Each bucket is a list of                                                    nodes respond with a set of k nodes they believe to be closest
+the k least recently seen nodes that have a certain distance, in                                          to ID. (4) Based on the acquired information, the node builds a
+relation to the node identifier ID. The factor k is a system-                                             new set of closest nodes and iteratively repeats steps (1)–(3),
+wide parameter which determines the routing state and the                                                 until an iteration does not yield any nodes closer than the
+lookup complexity.                                                                                        already known ones anymore.
+   Characteristically, Kademlia’s notion of distance is based                                                Like the bucket size k, α is a globally known parameter
+on the non-euclidean XOR-metric, calculated by applying                                                   determining the redundancy (and hence also the overhead)
+the ⊕-operation on two node identifiers and interpreting the                                              of the lookup procedure. At the same time, these parameters
+result as an integer number, i.e., d(x, y) = (x ⊕ y)10 . This                                             influence the lookup latency, as the parallel nature of the
+means, that for node identifiers of length L, a node ID0                                                  lookup procedure optimizes the needed delay. Typical param-
+holds buckets Bi , i = 0 . . . L − 1, whereby bucket Bi                                                   eter values are k ∈ [20, 100] and α = 3. As the Kadcast
+holds the node information of k nodes with IDj so that                                                    protocol is not used to store and retrieve values, it does not
+2i ≤ d(ID0 , IDj ) < 2i+1 . It follows that the node space                                                incorporate other message types found in Kademlia.
+covered by each bucket is exponential with i. The buckets
+can be thought of holding up to k nodes belonging to a series
+of subtrees with identifiers whose binary prefixes do not match                                           B. Message Propagation
+the nodes’ prefix, i.e., also not containing the node itself. For                                            As described before, most blockchain networks rely on
+example, given the fully populated tree shown in Figure 1, the                                            TCP-based transport protocols for block and transaction prop-
+4 buckets of node ID0 = 1111 would hold nodes from the                                                    agation, which ensure the reliable transmission of arbitrarily
+ranges 1110, 110*, 10**, and 0***, respectively. If a node                                                large data by retransmitting missing segments in case of packet
+wants to add a new entry to a given bucket that already holds k                                           loss. This method implicitly assumes long-lived connections
+entries, we employ a least recently used (LRU) drop policy.                                               and requires additional state-keeping in terms of connection
+Before dropping an entry from the list, the peer also checks                                              management and is therefore less scalable. Retransmissions
+whether the respective nodes is still reachable, and only drop                                            and head-of-line blocking might introduce additional delays
+it otherwise. This way, the protocol favors older, more stable                                            and unpredictable message overhead. In contrast, transport
+nodes over fresh ones. It thereby also circumvents an eviction                                            protocols such as UDP or QUIC [16] enable a more scalable
+                                                                                                                                    4
+
+
+
+Algorithm 1 Redundant broadcasting algorithm.                       the propagation method just discussed would result in an
+Require: broadcast height h,                                        optimal broadcast tree. In this scenario, every node receives
+  chunk data c,
+  set of known chunks C,                                            the required data exactly once and hence no duplicate mes-
+  redundancy factor β                                               sages would be introduced by this broadcasting operation.
+  if c ∈ C then abort                                               Unfortunately, we cannot make these assumptions and have
+  C ← C ∪ {c}
+  for i = 0 → h − 1 do                                              to consider packet losses, as well as adversarial and random
+      R ← randomly_select (β, Bi )                                  failures during transmission. In the example of Figure 1, if
+      for all r ∈ R do                                              a chunk on its way to node 0000 is corrupted or this node
+          send_chunk(r, c, i)
+      end for                                                       refuses to forward a chunk, the whole bucket B3 , i.e., the
+  end for                                                           right half of the tree, would not receive the corresponding
+                                                                    message. That is, in the worst case, a single transmission
+                                                                    failure caused by the unreliable UDP transport protocol could
+and dynamic approach with short-lived, low-cost transmis-           result in a network coverage of fifty percent only. Therefore,
+sions, which complement Kadcast’s design. While this al-            the broadcast algorithm is improved and secured by two
+lows for a lightweight protocol design with reduced state-          different approaches, which both introduce redundancy.
+keeping and tunable per-link message complexity, it also               In the following, we present means of improving the broad-
+entails handling data serialization and reliable transmission on    cast reliability and provide a first analytical assessment of the
+the application layer.                                              respective approaches.
+   Therefore, when the propagation of a block or a transaction         1) Improving Broadcast Reliability and Performance:
+is initiated, Kadcast first segments the data in chunks that are    Firstly, instead of having a single delegate per bucket, we
+then distributed in the network according to the broadcast pro-     select β delegates. This severely increases the probability
+cedure described in Algorithm 1, which is a modified version        that at least one out of the multiple selected nodes is honest
+of the algorithm in [24]. Kademlia’s bucket logic partitions        and reachable. It therefore protects the broadcasting operation
+the identifier space in subtrees whose sizes depend on their        against random and adversarial node failures on the propa-
+distance to the current node. The Kadcast protocol makes use        gation path. Moreover, this parallelized broadcasting method
+of this fact to generate a spanning tree that allows for an         improves the propagation performance in terms of latency:
+efficient broadcast operation: the algorithm delegates broadcast    nodes with the best connection receive the transmitted chunk
+responsibilities for subtrees with decreasing height h to other     first and will proceed to propagate the chunks in the bucket. As
+nodes, which recursively repeat the process within their dele-      this repeats on every hop, and Kadcast nodes ignore duplicate
+gated area. Therefore, when a miner initiates the broadcast, it     chunks, only the fastest routes are used for message delivery.
+is responsible for the entire tree with height h = L. The miner        Secondly, Kadcast has to consider transmission failures
+picks a random peer from each bucket and delegates broadcast        due to corrupted and/or dropped packets on every hop of
+responsibilities by sending CHUNK messages, which carry the         the propagation. When Kadcast is implemented on top of
+data and her routing information. In particular, it assigns a new   an unreliable transport protocol, such as UDP, it therefore
+height h, which effectively determines the receiver’s broadcast     needs to increase the reliability of the transmission and hence
+responsibility. When a node receives a CHUNK message, it            employs a forward error correction (FEC) scheme based on
+repeats the process in a store-and-forward manner: it buffers       RaptorQ [25] codes. The adoption of this scheme allows
+the data, picks a random node from its buckets up to (but not       Kadcast nodes to recover transmitted block data after the
+including) height h, and forwards the CHUNK with a smaller          reception of any s source symbols out of n encoding symbols,
+value for h accordingly.                                            which are transmitted via CHUNK messages. As this results in
+   Consequentially, with every step, another set of nodes           more transmitted data overall, an overhead of n−s additionally
+is designated to be responsible for chunk delivery in their         transmitted symbols per transmission is introduced. The FEC
+respective subtrees. A simple example for L = 4 can be              overhead factor can be adjusted through a parameter f = n−s   s .
+seen in Figure 1: node ID0 = 1111 initiates a broad-                Utilizing FEC gives the receiver the ability to correct errors
+cast in the network, and sends four CHUNK messages with             without the need for retransmissions, which lead to additional
+heights h = 0 . . . 3 to one random node picked from each of        delay. We therefore optimize our protocol in terms of latency
+the respective buckets Bi , i = 0 . . . 3. The receiving nodes      and accept an additional overhead. In order to allow nodes to
+repeat this procedure, again issuing messages to nodes from         recover from the rare case that message delivery fails, and to
+bucket numbers less then their assigned height. Hence, the          enable the initial bootstrapping of the blockchain, the Kadcast
+broadcast operation is performed on decreasing subtree sizes,       protocol also incorporates a simple REQUEST message that
+and therefore guaranteed to terminate in O(log n) steps. Upon       allows nodes to query others for specific blocks or transactions,
+receipt of all chunks required to rebuild a block or transac-       and is answered by the corresponding CHUNK messages.
+tion message, the node follows Bitcoin’s typical verification          2) Analysis of Parallelized Broadcast: Kadcast implements
+procedure before continuing the broadcast operation.                broadcast redundancy by parallelizing the algorithm. To this
+                                                                    end, we introduce the system parameter β, which describes
+C. Reliability of UDP-based Message Delivery                        how many distinct delegates per bucket should be selected
+  If we assume constant transmission times, honest network          (and thus how many nodes per bucket should receive a copy
+participants, and no packet loss in the underlying network,         of the message). This improved algorithm can be seen in
+                                                                                                                                              5
+
+
+
+Algorithm 1. Please note that for β = 1, Algorithm 1 describes                         β=1      β = 1, FEC            β=3       β = 3, FEC
+
+the “optimal” broadcast from Section III-B.                                     1.00
+   Along the lines of [24], we model the propagation reliability                0.75
+
+
+
+
+                                                                     Coverage
+as the expected node coverage of the broadcast operation,
+                                                                                0.50
+which is based on the average probability of transmission
+failures. Thus, given the failure probability  and β = 1,                      0.25
+
+a single broadcast chunk would reach its next hop with                          0.00
+probability p = 1−. The expected number of nodes receiving                                  0.03%           0.25%      1.83%        13.53%
+this chunk can therefore be expressed by M = (1 + p)L ,                                                 Packet Loss
+assuming a balanced distribution tree of height L, which is
+highly plausible due to the uniform random distribution of         Figure 2: Reliability of UDP-based block propagation over
+node identifiers. It follows that the ratio of covered nodes is    unreliable channels (block size of 1 MB, L = 160, and FEC
+                                        L                        overhead factor f = 0.15).
+                          M        1+p
+                    m= L =                   .
+                          2          2
+                                                                   this approach ensures that broadcasted blocks reach full net-
+Note however that this expression models the transmission of       work coverage for packet loss rates up to around 9%.
+a single chunk without redundancy.                                    However, this can still be improved by combining the FEC
+   In order to express the coverage of a redundant broadcast,      approach with redundancy, i.e., β > 1. In this case, the success
+we need to extend this model. We therefore model the parallel      probability is pb,β,f = 1 − (1 − pb,f )β , which is shown
+execution of our algorithm as the probability that at least        for β = 3 in Figure 2 as well. The combination of FEC
+one of the redundantly sent chunks is successfully delivered,      and parallelization ensures full network coverage, even if on
+i.e., pβ = 1 − β . Moreover, let X be a random variable           average 12% packets are lost during transmission.
+expressing the number of received chunks. The probability             The analysis results highlight that FEC is a favorable way
+that we receive all s chunks of a block or transaction is thus     to ensure reliable UDP-based transmission of data over an
+pb = P (X = s) = ps , which induces a failure probability          unreliable network infrastructure: it allows to significantly
+of b = 1 − pb . Accordingly, the probability to deliver a         increase the reliability of the broadcast while introducing a
+message with redundancy β is given by pb,β = 1 − βb . These       relatively small linear overhead. In contrast, the overhead
+observations yield an expected coverage ratio of                   introduced with increasing the replication factor β introduces a
+                            
+                              1 + pb,β
+                                       L                          larger increase in messaging complexity. However, broadcast
+                    mb,β =                .                        redundancy is still required in cases where the weak point
+                                 2
+                                                                   is not just an unreliable network link, but a malicious node
+   As the transmission of blocks is only successful, if all        obstructing block or transaction delivery.
+chunks are received, the propagation of entire blocks is not
+as reliable. To this end, we analyze the expected UDP-based                             IV. K ADCAST S ECURITY AND P RIVACY
+block broadcast coverage in the face of different packet loss         Fast and fair block propagation is considered security-
+rates, β ∈ {1, 3}, and an assumed block size of 1 MB.              critical for the consensus layer of blockchain-based systems.
+The results are shown in Figure 2: we observe that without         However, the peer-to-peer network and the block propagation
+redundancy even the smallest packet loss makes the probability     mechanism may also become themselves subject to attacks on
+of delivering a block drop immediately, hence rendering the        security and privacy. In the following, we therefore discuss
+chance of covering the entire network virtually impossible.        the security and privacy properties of the Kadcast network
+While a redundancy factor β = 3 has a positive impact on the       protocol. In particular, we make the security and privacy
+block propagation, it is not sufficient on its own to guarantee    threats transparent and provide a series of mitigation strategies.
+the reliable transmission of entire blocks over a lossy channel.
+However, the parallelized broadcast is still necessary either      A. Adversary and Threat Model
+way to compensate adversarial and random node failures, and
+to improve the propagation performance, as discussed before.          We assume an active adversary who joins the peer-to-
+   3) Analysis of FEC-based Block Delivery: In order to            peer network. More specifically, the adversary has the means
+further increase the block transmission reliability, a Kadcast     and resources to run and maintain a number of nodes. The
+node employing the RaptorQ forward error correction has to         adversary’s intention is to attack the network as a whole or
+successfully receive s or more arbitrary symbols out of the n      to isolate specific nodes by occupying strategic positions in
+transmitted in order to recover a full block, an event which       the network. Please note that this includes, both, attacks on
+can be modeled by a binomial distribution, i.e.,                   security as well as privacy of the network and its users.
+                                                                      Numerous previous entries study Kademlia’s security prop-
+                                                   s−1
+                                                   X               erties, its behavior when attacked by a range of adversaries,
+      pb,f = P (X ≥ s) = 1 − P (X < s) = 1 −             p.        and designs improving on its security [26, 27, 28, 29, 30,
+                                                   i=0
+                                                                   31, 32, 33]. In the following, we discuss the most prevalent
+Figure 2 clearly shows the improved transmission reliability       adversarial threats to the security of blockchain peer-to-peer
+offered by introducing FEC with 15% redundancy (f = 0.15):         networks in general and Kadcast in particular.
+                                                                                                                                       6
+
+
+
+   1) Sybil attacks: The notion of a Sybil attack [34] describes      possibly deanonymizing their origin [37, 38, 39]. Furthermore,
+the possibility of a single adversary to embody a large num-          the notion of AS-level adversaries, i.e., adversaries monitor-
+ber of network entities by forging additional identities. By          ing the data flows of blockchain networks within an entire
+doing so, the adversary aims to outnumber the honest nodes            autonomous system (AS), has been discussed in literature [40,
+participating in a distributed system, effectively increasing the     41]. Such passive attacks on privacy are a threat to the Kad-
+share of malicious nodes in the system. Moreover, a Sybil             cast network protocol in particular, since broadcast messages
+attack is especially enticing when the forged identities can be       include a height field, which is additional information that may
+used to trick the system and enable unwanted behavior. In             allow an adversary monitoring transaction propagation to infer
+systems based on the Kademlia overlay, Sybil attacks may be           her distance from the transaction’s origin.
+used to generate a lot of identities that can fill up a victim’s
+buckets [30, 32]. The ability to run this kind of attack is often a
+                                                                      B. Best Practice Mitigation Strategies
+prerequisite to be able to run Eclipse attacks (see next section)
+on Kademlia-based systems. In the case of Kadcast, if an                 The Kadcast protocol employs a number of countermeasures
+adversary can forge arbitrary IDs and position herself close to       in order to increase its resilience to the various threats. Later
+a target, she may be able to increase the likelihood of receiving     in Sections IV-C–IV-E, we present Kadcast-specific counter-
+lookups and broadcasts from this node. This may enable the            measures. Here, we concentrate on best practice mitigation
+adversary to simply refuse block delivery and thereby obstruct        strategies and how they can be integrated into Kadcast.
+the block propagation. Hence, we observe that the ability                First of all, Kadcast follows a bucket eviction policy that
+to create valid node identifiers at arbitrary positions in the        favors older, more stable nodes over newly acquired node
+network is detrimental to the security of the system.                 addresses. By following this policy, we increase an adversary’s
+   2) Eclipse attacks: All peer-to-peer networks rely on some         efforts, requiring her to run nodes for longer periods. Even
+kind of routing scheme that allow nodes to decide where to            stricter bucket policies, which enforce a certain degree of
+forward data or which nodes to query for a specific data item.        diversity from an AS-level and/or subnet perspective [40, 41],
+However, these routing decisions are made on the basis of             are conceivable. The general approach effectively prevents the
+an underlying data structure, the routing table. Eclipse attacks      adversary from easily supplying all nodes known to the victim.
+describe a family of attacks on peer-to-peer networks in which           In addition, the Kadcast protocol can easily be extended
+the adversary manipulates the routing tables of its targets to        to incorporate cryptographic puzzles as Sybil and Eclipse
+contain only nodes controlled by the adversary. Once she              protection, similar to [31, 42, 43]. Along the lines of proof-
+isolated her target from the rest of the network, the adversary       of-work mining, a joining node has to find a nonce, so that
+is in full control of the data streams coming from and to the         the hash of concatenation of its identifier and nonce adheres
+target node. This may be used by the adversary to completely          to a certain difficulty level. That is, the binary value of the
+block data delivery, selectively obstruct data transmission, or       hash has to be less than the chosen difficulty target, i.e.,
+even foist spurious data.                                             H(ID || ID_NONCE) < tdif f , where tdif f is a global system
+   In blockchain networks, Eclipse attacks are a serious threat,      parameter. Every node that receives a new node identifier
+since they could be used to monopolize the connections of             validates this property before it inserts the new node to its
+a target node and then further exploit the protocol. They             buckets. It can run the validation quickly, while the node
+have been shown to enable double-spending and selfish-mining          generation can take quite some time, depending on the chosen
+attacks [23, 35]. In the past, the feasibility of Eclipse attacks     parameter tdif f . The inclusion of this hash puzzle scheme
+on the Kademlia protocol have been studied in literature [30,         impairs the ability of an adversary to quickly generate a large
+32, 33]. These studies show that, if an adversary would come          number of node identifiers. Evidently, the use of cryptographic
+to control a large number of node identifiers, she may try to         puzzles also has its difficulties with respect to difficulty
+flood all buckets of a target node with addresses of nodes in         adjustments and a skewed distribution of computational power.
+her control. This technique could be used to isolate Kadcast             In general, we can observe that by safeguarding node
+nodes from the rest of the network.                                   identifiers and enforcing rigorous bucket policies, Kadcast
+   3) Denial-of-Service attacks: Broadcast protocols aim to           follows best practices for Sybil and Eclipse protection [35].
+distribute information to all nodes in the network. This in-             In order to avoid Denial-of-Service (DoS) attacks,
+herent asymmetry immediately raises the question on whether           blockchains like Bitcoin employ a store-and-forward propaga-
+they allow an adversary to flood the network with arbitrary           tion policy: each time a node receives a new block, it is first
+data, i.e., how susceptible they are to denial-of-service (DoS)       stored and validated (i.e., check the proof of work), before it is
+attacks. Additionally, previous work [36] highlighted that node       announced to neighbors. This way, an adversary trying to flood
+operators have become targets of DDoS in the past. In the             the network with fake block data would have to solve a proof-
+worst case, this results to a node failure, which might impair        of-work hash puzzle for each of the forged blocks, making it
+the broadcast operation.                                              a very unattractive attack vector. The Kadcast protocol sticks
+   4) Transaction Privacy: Previous works highlighted that            to this DoS protection scheme.
+the propagation of messages in the network may compromise                Lastly, communication between nodes should be en-
+user privacy. In particular, it has been shown that malicious         crypted to mitigate network-level threats. Unfortunately, many
+nodes may passively monitor the network and link transaction          blockchain networks, e.g., Bitcoin, do not employ this mitiga-
+data to identifying information such as IP addresses, thereby         tion strategy. For Kadcast, we propose to encrypt messages
+                                                                                                                                        7
+
+
+
+at the transport layer [44], which hinders an AS-level ad-           equal manner the probability to be selected by the target’s
+versary from passively monitoring the network traffic. More          broadcast operation. For example, as the bucket size in a
+specifically, we suggest to implement a trust-on-first-sight         network of N nodes can be estimated to be
+public key pinning policy and to derive the node identifiers                                     i
+                                                                                                  2
+                                                                                                        
+from the corresponding public keys. We consider this is an                                bs,i = L · N ,
+                                                                                                 2
+easy way to bind the protocol to cryptographic identities
+without necessitating a dedicated (possibly centralized) public-     a successful attack on the transmission to bucket BL−1 may
+key infrastructure (PKI).                                            lead to only a coverage of N/2 nodes. However, the required
+                                                                     number of nodes in this bucket space is also proportionally
+                                                                     harder to acquire for the adversary. Due to Kadcast’s parallel
+C. Identifier Space Randomization
+                                                                     route selection, it becomes highly unlikely that all β nodes
+    As just discussed, it is essential for network security and      per bucket are picked from the adversary’s pool. In particular,
+privacy to impair an adversary’s capability to determine and         when the adversary can acquire control of M nodes, we can
+exploit a node’s position in any distribution graph for a given      assume that the same share,  = M/N , describes the situation
+block or transaction broadcast. In particular, an adversary          in every bucket and hence determines the failure probability of
+should not be able to pre-populate nodes’ buckets with pre-          a single broadcast operation. Accordingly, this would result in
+calculated identifiers in a targeted fashion. To this end, Kadcast   a parallelized broadcast failure probability of p = (M/N )β ,
+employs identifier space randomization in order to facilitate        which exponentially decreases with the redundancy factor β,
+distribution graphs that cannot be easily anticipated by an          as we discussed and analyzed in Section III-C.
+adversary. However, a complete randomization of the iden-               The more interesting case is an adversary trying to interfere
+tifier space would abandon the network structure and hence           with the block delivery to a specific node. As discussed before,
+also render Kadcast’s efficient broadcast algorithm based on         a true Eclipse attack is unfeasible in the Kadcast network,
+the XOR-metric non-deterministic. We therefore implement             since it strictly applies best practices as well as identifier space
+pseudo-randomized views of the identifier space for each             randomization. However, in the following we analyze security
+broadcast operation. In this regard, additional temporary rout-      of block delivery when faced with an adversary that is able to
+ing tables are created for each block or transaction broadcast,      spawn a certain amount of network nodes, i.e., attempting a
+in which buckets are populated based on a salted distance            Sybil attack. In order to calculate the probability of successful
+metric ds (x, y) = (x ⊕ y ⊕ s)10 , where s describes a salt          block delivery in face of such an attacker, we model the
+value derived from the message data to be propagated, e.g.,          broadcast operation as a simple Markov chain. In this model,
+the hash of the corresponding block or transaction message. By       the block propagation starts in an arbitrary distance i from
+applying such a temporary transformation to the node identifier      the target. For instance, if the origin would fall in bucket B2 ,
+space, we make sure that, on the one hand, node locations            the model only needs to consider the operations in height two
+cannot be predicted by any adversary, but that on the other          or smaller. The broadcast operation succeeds, when the block
+hand the network view of all nodes remains the same on a             is delivered to the target node, and only honest nodes were
+per-broadcast basis.                                                 visited during path traversal.
+                                                                        The initial state in the Markov model is si , and without
+D. Obstruction of Block Delivery                                     loss of generality we can assume it to start at sL−1 , the state
+   The reliability of Kadcast depends on the responsiveness          representing broadcast in the largest bucket. From state i, the
+and compliance of delegate nodes. An adversary however may           Kadcast algorithm can delegate the targeted node directly and
+have an interest to obstruct the block delivery. To this end,        transition to the success state sd with probability
+she could position herself on the distribution path during the                                                  β
+                                                                                                        bs,i − 1
+broadcast operation, and refuse to comply when chosen as                                  pd,i = 1 −                .
+delegate. In the following, we will elaborate and analyze this                                             bs,i
+general attack vector.                                               Alternatively, the algorithm chooses some other node in the
+   First, an adversary may try to prevent a specific node from       bucket with probability pd,i . The chosen node may be either
+publishing a new block. In order to intercept outgoing blocks        honest or malicious. If it is honest (again, probability ph =
+generated by a target node, an adversary needs to fill every         1 − p = 1 − (M/N )β ), the broadcast operation continues and
+bucket of the target with malicious nodes. We assume that an         the model transitions to state si−1 . If it is malicious, it would
+adversary is able to spawn M out of N nodes, but cannot              obstruct the block delivery, and hence the model transitions
+foresee or cheat the placement mechanism, i.e., has to hash          to the fail state sf with probability ph = 1 − ph . Once in
+node identifiers like everyone else, resulting in a uniform          the success or fail state, the fate of the broadcast operation is
+coverage of the randomized identifier space. In fact, this is        decided, hence the Markov model reaches a steady state after
+a set of very conservative assumptions, since we neglect the         a maximum of L − 1 state transitions.
+previously discussed bucket filling and eviction policies that          We implemented the Markov chain model utilizing the
+would heavily skew this towards stable and honest nodes.             R package markovchain [45], and simulated the success
+Moreover, for the sake of censoring outgoing blocks, all             probability of block propagation for different shares of mali-
+buckets are equally attractive targets, since the covered space      cious nodes  and redundancy factors β. As these simulations
+does not only determine the amount of affected nodes, but in         assume the source to be in the bucket of highest distance
+                                                                                                                                             8
+
+
+
+               Table I: Markov Simulation Results                                        1     3        5               Baseline
+                                                                                         2     4                        Random Walk
+          Parameters                      Results                          1.00
+     N        M           β              p                 pd
+                                                                           0.75
+ 11,000     1,000   0.1    3         0.00075              0.993
+
+
+
+
+                                                                      pm
+ 12,000     2,000   0.2    3          0.0046              0.957            0.50
+ 13,000     3,000   0.3    3          0.0122              0.888
+ 13,000     3,000   0.3    5         0.00065              0.994            0.25
+ 15,000     5,000   0.5    5          0.0041              0.963
+                                                                           0.00
+                                                                                  0.00       0.25           0.50         0.75         1.00
+
+(L − 1), they yield worst-case estimations for the steady-state                              Share of malicious nodes
+success probability. The results are shown in Table I; even         Figure 3: Probability of detection with and without a
+for adversaries that control 10% of network nodes, Kadcast          prepended privacy phase in dependence of the share of mali-
+delivers block with more than 99% probability. Moreover, by         cious nodes and the parallelization factor β (L = 160).
+adjusting the redundancy factor, Kadcast is able to deliver
+blocks with more than 96% probability in a highly adversarial
+environment where 50% of nodes are adversarial.
+                                                                    for propagated transactions. We furthermore assume that the
+                                                                    adversary has no knowledge of additional information that
+E. Privacy of Transaction Propagation                               would allow her to infer the propagation path, but is only
+   In the following, we discuss what privacy Kadcast can pro-       capable of passively recording from which node the controlled
+vide during transaction propagation and what improvements to        observation points received a transaction. That is, the adver-
+the baseline protocol should be considered in other to further      sary classifies observations according to a so-called first-spy
+mitigate the possibility for attacks on user privacy.               estimator model and assumes the first encounter to be the
+   1) Prepending a Random Walk: As the Kadcast protocol is          transaction’s origin [46]. As additional confounding factors—
+designed with privacy in mind, its protocol messages generally      such as considering varying verification times, link latencies,
+do not include unnecessary information that may be utilized by      or bandwidths—would only increase entropy and hence reduce
+an adversary in order to gain additional knowledge on their         an adversary’s capabilities, we omit modelling any message
+origin. However, one necessary exception to this rule is the        delivery timings, but assume that network messages arrive in
+height field that is part of the broadcast messages carrying        the order in which they were initially sent.
+block and transaction data. As this field is initialized with L        As a consequence, the adversary estimates the correct
+and is decreased with every subsequent forwarding step, an          transaction origin, if any of the M malicious nodes receive a
+adversary receiving a broadcast message is able to infer her        propagated message first, i.e., it is selected by the origin as one
+distance from the originator of the broadcast in the propagation    of the d1 = β(L − 1) initial bucket delegates. This probability
+graph. This is particular worrisome for the first hop, as an        of detection is the probability that at least on malicious node
+adversary receiving a message with height L − 1 would be            is initially chosen, i.e.,
+able to infer that the sender of this message is also its origin.
+While this may be no issue for block propagation (blocks can                                                           d1
+                                                                                                                N −M
+be assumed to be not privacy-critical) it may be detrimental                             pm = ph = 1 −                        .
+to user privacy for transaction propagation.                                                                      N
+   Borrowing from the idea of the Dandelion protocol [46, 47],
+Kadcast therefore improves the privacy of transaction propa-        By utilizing the privacy phase, the number of delegates directly
+gation by prepending the spreading process with a privacy           contacted by the originator is reduced from d1 = β(L − 1) to
+phase, i.e., introducing an initial random walk. To this end, the   d1 = β, hence resulting in a lower probability of detection.
+originator of a transaction broadcast initially sets the height        Figure 3 shows the probability of detection with and without
+field to an otherwise unused magic number (e.g., L + 1) in          a prepended privacy phase in dependence of the parallelization
+order to signal that the broadcast is still in the privacy phase    factor β. We observe that in the baseline Kadcast protocol,
+and sends corresponding messages to β initial peers. After          an adversary would indeed have a really high probability of
+receiving these messages, each of these peers reads the height      guessing the originator of a transaction correctly. However,
+field and throws a weighted coin in order to decide whether         we also can see that the privacy phase immensely improves
+to continue the random walk, i.e., forward the message to a         this and depending on the degree of parallelization may even
+single other peer, or immediately initiate the spreading of the     come close to the optimal probability proportional to the share
+transaction message as discussed above. It follows that the         of malicious nodes M/N . Finally, we observe that there is a
+expected length of the random walk can easily be adjusted           trade-off between privacy and reliability: on the one hand,
+through the weight parameter of the coin toss.                      the more nodes β the transaction originator initially contacts,
+   2) Resilience to Passive Attacks on Privacy: In order to         the higher is the probability that a passive adversary gains
+study the privacy that Kadcast can provide, we in the following     information on the transaction’s origin. On the other hand, as
+assume scenarios in which an adversary controls an embedding        we previously explicated, a too low β value may leave the
+of M out of N nodes that passively monitor the network              broadcast operation open for censorship attacks.
+                                                                                                                                    9
+
+
+
+        V. E VALUATION : N ETWORK S IMULATIONS                         1) Block Propagation Delay: As a first study, we inves-
+  In this section, we evaluate the block distribution perfor-       tigated the performance of Kadcast compared to different
+mance, the broadcast reliability and efficiency, as well as the     instantiations of vanilla broadcasting. Figure 4 shows the block
+security impact of the Kadcast protocol on an empirical basis.      propagation delay to reach 90% of all nodes as cumulative
+For this, we gathered data from a comprehensive network             distribution functions F (x): as expected, the block distribution
+simulation study, which are discussed in the following.             time heavily depends on the block size and block intervals, as
+                                                                    well as the employed messaging pattern. The Kadcast pro-
+A. Simulation Model                                                 tocol, however, delivers blocks significantly faster compared
+                                                                    to vanilla in all cases. For example, Kadcast exhibits a mean
+   Our network simulation study utilizes the network-centric        propagation time of 436 ms to deliver compact blocks with
+bns [14, 48] blockchain simulation framework, which is              a 1 MB block size limit (Bitcoin-like scenario, upper plot),
+based on the time-discrete network simulator ns-3 [49]. The         which is close to twice as fast as vanilla with enabled compact
+parameters that fuel our simulation are therefore generally         blocks. The mean propagation delay for unsolicited Kad-
+chosen in reference to real-world measurements of the Bitcoin       cast propagation is 2,349 ms, 63% faster than header-based,
+peer-to-peer network [48]. Furthermore, bns allows us to            and even 70% faster than unsolicited vanilla propagation in
+evaluate a UDP-based Kadcast implementation in comparison           Bitcoin-like scenarios.
+to a TCP-based vanilla blockchain network protocol stack.              The improved propagation speed is also reflected by an
+   While our evaluation is based on a number of different           overall faster network coverage: while it takes vanilla in
+setups, the results described in the following are based on         the Bitcoin case with enabled compact blocks 1,133 ms to
+scenarios simulating the mining process in networks with            reach 90% of the network, Kadcast is able to reach the same
+N = 500 nodes. Every scenario was repeated 30 times for             number of nodes around 22% faster. Unsolicited propagation
+different seed values to ensure statistical significance of the     via Kadcast reaches 90% coverage even respectively 53% and
+conducted measurements. During the three hour simulation            60% faster than header-based and unsolicited propagation in
+time, the miners generated blocks and initiated broadcast           the unstructured vanilla networking layer.
+operations employing one of the networking stacks, i.e., the           Furthermore, as shown in the bottom-left of Figure 4,
+unstructured vanilla baseline or the Kadcast protocol. We           Kadcast’s performance is competitive with vanilla’s in the case
+furthermore implemented and evaluated the impact of different       of smaller intervals and smaller block sizes: in the Ethereum-
+messaging patterns, i.e., header, cmpctblock, and unsolicited       like scenario, unsolicited Kadcast is able to deliver blocks
+block propagation for the vanilla stack, as well as cmpctblock      on average more than 60% faster than the unsolicited vanilla
+and unsolicited propagation for Kadcast. In the Kadcast case,       baseline, and even 66% faster than the header-based propa-
+if not stated otherwise, the results are based on the default       gation. However, the vanilla stack performs slightly better in
+parameters L = 64, k = 100, α = 3, β = 3, and an FEC                the compact block case, in which it is around 7% faster than
+overhead factor f = 0.05.                                           Kadcast. For the larger block sizes of 4 MB, 8 MB, and 16 MB
+   In order to analyze the protocol behavior under different        (cf. the bottom-right plot), Kadcast is on average also able to
+network conditions, we furthermore evaluated all protocol           consistently deliver blocks more than 50% faster.
+variants in the Hub & Spoke, as well as in the geographic              These results highlight on the one hand the messaging
+topology models provided by the bns framework [48]. The             pattern has a significant impact on the performance of block
+Hub & Spoke model is a typical setup for the assessment             propagation. On the other hand, we conclude that Kadcast is
+of peer-to-peer overlays, and while it captures some network        able to immensely speed up the block distribution and may be
+effects, it does not rely on additional assumptions about the       beneficial to a wide variety of blockchain networks.
+underlying topology. As it furthermore assumes the Internet            2) Impact on Consensus Stability: The effect of quicker
+connectivity to not be a bottleneck, it creates an idealized        block propagation is also reflected in the median stale rate,
+simulation scenario that gives us the capability to assess the      i.e., rate of blocks that are mined, but do not become part of
+networking stacks based on a neutral, common ground. The            the final blockchain. As increased blockchain forks and wasted
+geographic topology model however captures a heterogeneous          mining power weaken consensus security, the stale rate is an
+and partly resource-restricted environment that enables simu-       indicator for how the networking layer impacts security [5].
+lations in more complex network scenarios, which incorporate           The boxplots in the lower part of Figure 4 show the stale rate
+a high degree of network effects.                                   in dependence of the applied messaging pattern and different
+                                                                    choices for the redundancy parameter β: in the Bitcoin-like
+B. Protocol Evaluation                                              scenario, Kadcast achieves a median stale rate of zero, barring
+   In order to show the benefits of the Kadcast protocol in         the occasional outliers. This is comparable to the vanilla
+different environments, we created simulation scenarios with        cases, which exhibit similar behavior. However, in the case
+parametrizations resembling Bitcoin (10 min. block interval         of a decreased block interval, the ratio of propagation delay
+and 1 MB block size limit) and Ethereum (15 sec. block              to block interval gets much larger, resulting in an overall
+interval, proportionally smaller block size limit of 25 KB [50]).   increased stale rate of around 1–2%. In this Ethereum-like
+Moreover, in light of the debates on block size limits in           scenario, the influence of the messaging pattern is again clearly
+the Bitcoin community, we additionally analyzed the block           visible, as compact block based propagation beats unsolicited
+propagation for increased block size limits of 4, 8, and 16 MB.     and header-based propagation every time. In accordance with
+                                                                                                                                                                                                                     10
+
+
+
+                              Uns.             HEADER                                                  Kadcast                                                                          1              8
+                              CMPCT                                                                    Vanilla                                                                          4              16
+                     10 min., 1 MB                                                15 sec., 0.025 MB                                                            1, 4, 8, 16 MB, CMPCT
+              1.00                                                         1.00                                                                         1.00
+
+              0.75                                                         0.75                                                                         0.75
+ F(x)
+
+
+
+
+              0.50                                                         0.50                                                                         0.50
+
+              0.25                                                         0.25                                                                         0.25
+
+              0.00                                                         0.00                                                                         0.00
+                      0       2500        5000       7500          10000           0         200            400                         600                        0                   5000                 10000
+                              Propagation Delay (ms)                                       Propagation Delay (ms)                                                              Propagation Delay (ms)
+
+                                           Unsolicited         CMPCT                HEADER                                                                                 Kadcast              Vanilla
+
+                     10 min., 1 MB, Hub & Spoke                                   15 sec., 25 KB, Hub & Spoke                                                  4, 8, 16 MB, Hub & Spoke, CMPCT
+                                                                           0.05                                                                         0.12
+
+              0.30                                                         0.04                                                                         0.09
+ Stale Rate
+
+
+
+
+              0.20                                                         0.03
+                                                                                                                                                        0.06
+                                                                           0.02
+              0.10                                                                                                                                      0.03
+                                                                           0.01
+              0.00                                                         0.00                                                                         0.00
+                          1           3          5          Van.                       1           3                         5            Van.                             4                    8              16
+                                           β                                                              β                                                                       Block Size (MB)
+
+Figure 4: Block propagation delay and resulting stale rates for Bitcoin-like and Ethereum-like parametrizations, as well as for
+simulation scenarios with higher block size limits.
+
+the results of the previous section, the compact block based                                                                                         Unsolicited               CMPCT                HEADER
+vanilla variant achieves the lowest median stale rate of 1.3%.
+                                                                                                                                    10 min., 1 MB, Hub & Spoke
+                                                                                                           Overhead Ratio
+
+
+
+
+   The simulations with compact block relaying of larger                                                                    20.00
+blocks indicate that the additional stress on the network                                                                   15.00
+                                                                                                                            10.00
+layer negatively impacts consensus security: while vanilla and                                                               5.00
+Kadcast can mostly retain a median stale rate of zero, the                                                                   0.00
+number of outliers increase in both cases. Though, in the case                                                                                   1                     3                    5                 Van.
+
+of the 16 MB block size limit, a clear difference becomes                                                                           f            0.05          0.15              0.2            0.25           0
+apparent, as Kadcast can retain an average stale rate of 1.6%
+                                                                                                                                    10 min., 1 MB, Hub & Spoke, CMPCT
+versus vanilla’s 6%.
+                                                                                                           Overhead Ratio
+
+
+
+
+                                                                                                                             0.80
+   In summary, the improved block propagation of Kadcast                                                                     0.40
+leads to a median stale rate that is comparable and often                                                                    0.00
+                                                                                                                            -0.40
+better than the results of the vanilla stack. This indicates that
+the consensus security of blockchain systems could benefit                                                                                       1                     3                    5                Van.
+from employing the Kadcast protocol. Moreover, since blocks                                                                                                                β
+reach a larger share of the network much faster, the adoption
+                                                                                                         Figure 5: Overhead ratios in dependence of applied messaging
+of Kadcast could help to mitigate time-dependent adversarial
+                                                                                                         pattern and parametrizations for f and β.
+mining strategies, such as selfish mining [51].
+   3) Broadcast Efficiency: In order to confirm the adjusta-
+bility and efficiency of the Kadcast protocol, we recorded the                                              Figure 5 shows the resulting overhead ratios in dependence
+total amount of traffic ttotal produced during our simulation                                            of the applied messaging patterns and different parametriza-
+time. Furthermore, we accumulated the block sizes of all                                                 tions of the redundancy parameters β and f . Firstly, we
+blocks generated during this time, tblocks . As all blocks need                                          observe that Kadcast’s overhead immensely depends on the
+to be transmitted to each node at least once, the minimum                                                applied messaging pattern and that it increases linearly with
+amount of traffic for the broadcast operation can be calculated                                          the redundancy factors β and f . As expected, unsolicited
+as N · tblocks . Accordingly, we define the overhead ratio as                                            block propagation overall results in a significantly higher
+ro = (ttotal − N · tblocks )/(N · tblocks ), which describes how                                         overhead than the propagation through headers or compact
+much additional traffic was generated during a simulation run,                                           blocks. We moreover note that throughout all parametrizations,
+including all signaling messages.1                                                                       Kadcast’s overhead remains below its vanilla counterpart: for
+                                                                                                         β = 1, Kadcast even with unsolicited block relay results
+                                                                                                         in an overhead ratio below the header-based and compact
+   1 Note, that since we only consider block propagation for the traffic
+                                                                                                         block variants of vanilla, and for β = 5, it is comparable
+estimation and due to the existence of stale blocks, the overhead ratio may
+assume values below 1 or even 0, which however does not impair the validity                              to unsolicited vanilla propagation. In the bottom half of
+of this metric.                                                                                          Figure 5, we can finally observe that the overhead of compact
+                                                                                                                                                                              11
+
+
+
+                                              0         0.2       0.4                                     Uns.           CMPCT          HEADER                 Kadcast
+                                             0.1       0.3       0.5                                                                                          Vanilla
+                    10 min., 1 MB, Hub & Spoke
+                                                                                                    10 min., 1 MB, Geo
+              1.0
+                                                                                             1.00
+ Coverage
+
+
+
+
+              0.8
+                                                                                             0.75
+
+
+
+
+                                                                                F(x)
+              0.6                                                                            0.50
+              0.4                                                                            0.25
+
+                        1        2        3         4         5         Van.                 0.00
+                                                                                                      0                 2500            5000            7500          10000
+                    10 min., 1 MB, Hub & Spoke                                                                                 Propagation Delay (ms)
+              0.6
+ Stale Rate
+
+
+
+
+                                                                                                                     Unsolicited       CMPCT         HEADER
+              0.4
+                                                                                                    10 min., 1 MB, Geo
+              0.2
+              0.0
+
+
+
+
+                                                                                Stale Rate
+                                                                                             0.40
+                        1        2        3         4         5         Van.
+
+                                              β                                              0.20
+
+Figure 6: Network coverage and stale rate, when a share  of                                 0.00
+                                                                                                                 1                 3             5             Van.
+adversarial nodes is introduced to the network.                                                                                          β
+
+block propagation through Kadcast is consistently below the                    Figure 7: Block propagation delays and stale rates for different
+vanilla counterpart. This shows the adjustability of the Kadcast               parametrizations in the geographic topology model.
+approach, which allows for a fast block relay with low and
+controllable overhead.                                                         expect a degraded performance with a more pronounced long
+                                                                               tail and more outliers.
+C. Protocol Behavior under Attack                                                 The results shown in Figure 7 confirm our expectations.
+                                                                               But despite the heterogeneous network conditions, the results
+   We empirically evaluated the performance of Kadcast in the
+                                                                               follow the same tendencies as discussed before: in general,
+face of an adversary obstructing block delivery. For this, we
+                                                                               Kadcast provides faster block propagation than vanilla. In
+set up simulation scenarios in which a fraction  of nodes were
+                                                                               particular when compact block relaying is enabled, the per-
+marked as adversarial and henceforth would cease to forward
+                                                                               formance improvements are clearly visible. Nevertheless, the
+blocks. The upper part of Figure 6 shows the network coverage
+                                                                               results also show that the UDP-based Kadcast implementation
+in dependence of  and β: while Kadcast, of course, reaches
+                                                                               may exhibit degraded performance when facing slower or
+100% network coverage for  = 0, its block propagation is
+                                                                               more congested networking environments. In particular for
+severely hindered when malicious nodes are introduced and
+                                                                               the unsolicited block propagation, we can see the first signs
+no redundancy exists (β = 1). However, the effect of the
+                                                                               of network congestion in Kadcast: even though the average
+redundancy factor β is also clearly visible, ensuring 99%
+                                                                               propagation delays are comparable with vanilla, the propa-
+coverage for β = 3 as long as  ≤ 0.3. For β = 5, Kadcast
+                                                                               gation delay distribution exhibits a longer tail. The degraded
+can even handle higher shares of malicious nodes ( ≥ 0.4).
+                                                                               network performance is also reflected by higher stale rates for
+   Interestingly, while vanilla’s network coverage is not im-
+                                                                               β > 1. As the effect is only exhibited with unsolicited block
+paired by the introduction of adversarial nodes, it does exhibit
+                                                                               propagation, enabling compact block relaying ascertains low
+degraded propagation performance due to the almost frag-
+                                                                               stale rates even in the face of these restricted and heteroge-
+mented network. In fact, the resulting stale rates of both pro-
+                                                                               neous environments.
+tocols are very similar, when confronted with such a powerful
+adversary (cf. lower part of Figure 6). The results show that,                    In a first conclusion, we can confirm that Kadcast improves
+with a reasonably chosen set of parameters, Kadcast is resilient               the efficiency of blockchain networks, particularly in com-
+to a large amount of adversarial nodes and compares to the                     bination with compact blocks. We, however, can also see a
+currently deployed vanilla networking layer.                                   weakness of the UDP-based approach in Kadcast for restricted
+                                                                               network environments as it can lead to network congestion
+                                                                               and therefore to degraded performance. This is not surprising
+D. Protocol Behavior under Degraded Network Conditions                         as our data transport does not include any congestion control
+   In order to evaluate the Kadcast protocol in more heteroge-                 mechanisms. We accordingly consider implementation of con-
+neous networking environments, we reproduced the previous                      gestion control in Kadcast as a logical, necessary next step,
+scenarios in a resource restricted setting. We utilize the geo-                which we will address in the next section with Kadcast-NG.
+graphic topology model (Geo) from [48], where node deploy-                     On a more general note, our simulation results show that de-
+ments resemble a geographic distribution with heterogeneous                    graded performance can be mitigated by compact block relay-
+network conditions (delay, bandwidth) on the underlay as mea-                  ing schemes. We therefore consider adopting such a messaging
+sured in the Bitcoin network. Due to lower bandwidths, larger                  pattern to be beneficial for blockchain networks in general.
+latencies, packet losses, and more complex structure of this                   This could help to further alleviate network bottlenecks in
+model, more network effects come into play. We accordingly                     heterogeneous environments and hence foster decentralization.
+                                                                                                                                             12
+
+
+
+     VI. K ADCAST -NG AND T ESTBED D EPLOYMENT                                       Kadcast-NG                 Uns.         HEADER
+                                                                                     Bitcoin Core               CMPCT
+   In the following, we introduce our prototypical implemen-              1.00
+
+tation of the Kadcast protocol, Kadcast-NG, and evaluate the
+                                                                          0.75
+properties of Kadcast in a global-scale testbed deployment.
+
+
+
+
+                                                                   F(x)
+                                                                          0.50
+
+A. Kadcast-NG: A QUIC-based Prototype Implementation                      0.25
+   As we have seen in the previous section, Kadcast may
+                                                                          0.00
+exhibit degraded performance in restricted network settings
+                                                                                 0                  2000             4000             6000
+when it is implemented on top of UDP. We therefore consider                                         Propagation Delay (ms)
+it necessary to implement the Kadcast protocol together with
+an appropriate transport protocol including congestion control.   Figure 8: Block propagation delays for kadcast-ng and
+While we could implement congestion control on top of UDP         Bitcoin Core in a testbed of 1,000 nodes.
+ourselves, we opt for the QUIC [16] transport protocol as
+a base for Kadcast-NG. QUIC fits the design philosophy of         Google Compute Cloud. Google Cloud’s e2-small in-
+Kadcast very well: It features data transmission via multiple     stances feature a shared CPU (vCPUs), 2 GB of memory,
+concurrent streams, which eliminates head-of-line blocking        and up to 1 Gbps egress bandwidth. We build upon the
+and therefore reinforces the benefits of Kadcast’s parallelized   results from [48], who measured the Bitcoin network and
+broadcast operation. In contrast to the comparatively slow TCP    derived a network model. According to the measured node
+handshake, QUIC furthermore facilitates connection establish-     distribution, we deploy node instances close to the regional
+ment in one or even zero RTTs. This is an important feature,      center of the geographic topology model. Specifically, we
+since it enables Kadcast to continue to follow the lightweight    deployed nodes in the Google Cloud zones: us-west1-
+soft-state approach in which short-lived connections are only     a (NA), southamerica-east1-a (SA), europe-
+established when they are needed. Moreover, QUIC is an            west3-a (EU), asia-south1-a (AS), australia-
+encrypted and authenticated transport protocol which provides     southeast1-a (OC), and asia-east2-a (CN). All node
+many benefits to the security and privacy of the Kadcast          instances are provisioned with Ubuntu Linux 20.10, Bitcoin
+protocol, as previously discussed.                                Core in regtest mode, and kadcast-ng.
+   In order to enable testing and evaluation in real-world           Of all deployed nodes, 15 nodes are chosen as “miners”
+networks, we developed kadcast-ng, a prototypical node            based on the geographic mining distribution [48]. They are
+implementation of the Kadcast protocol written in Rust [52].      then configured with a certain mining rate, which denom-
+The kadcast-ng codebase is open source and publicly               inates at which exponentially distributed rate they should
+available.2 Following the separation of concerns principle and    produce blocks to induce a network-wide average block
+for the sake of comparability, kadcast-ng is designed to run      interval of 10 minutes. According to this parameter, new
+on top of the Bitcoin Core daemon bitcoind [53], which is         blocks are generated through the invocation of bitcoind’s
+the reference implementation of the vanilla Bitcoin protocol.     generatetoaddress remote procedure call, which in the
+To this end, kadcast-ng interacts with bitcoind through           regtest mode allows to instantaneously create blocks, i.e.,
+its remote procedure call (RPC) [54] and ZeroMQ [55] inter-       simulate the mining process without actually searching for a
+faces only, while leaving the enforcement of the consensus        proof-of-work solution. In order to fill the blocks, new transac-
+protocol to bitcoind. This allows kadcast-ng to merely            tions are created based on a transaction rate parameter, which
+act as a relay node that receives and submits transaction         we assume to be uniformly distributed over all nodes. To this
+and block data which it (de-)serializes using the rust-           end, on average a total of 2,000 transactions should be created
+bitcoin [56] library implementation. At the time of writing,      for every block interval through the distributed invocation of
+rust-bitcoin does not (yet) support Bitcoin’s compact             the sendtoaddress RPC. This parameter corresponds to
+blocks [10]. The kadcast-ng prototype implementation is           the current average number of transactions per block in the
+therefore also limited to unsolicited block and transaction       Bitcoin network [58]. To enable this distributed issuance of
+propagation. As transport protocol and to establish overlay       transactions, we deploy a pre-generated blockchain and funded
+connections, the kadcast-ng prototype utilizes the asyn-          wallets to each individual node during provisioning.
+chronous Quinn [57] library implementation of the QUIC               As before, we configure kadcast-ng with the default
+protocol and establishes an encrypted overlay network based       parameters k = 100 and β = 3, and employ an initial
+on a trust-on-first-sight principle.                              waiting period to ensure that all nodes have finished their
+                                                                  initial bootstrapping before the experiment’s measurement
+B. Testbed Setup                                                  period of 24 hours starts.
+   In accordance with real-world blockchain networks, we
+setup a testbed that enables the evaluation in a global and       C. Block Propagation Performance
+real-world network setting. To this end, we deployed 1,000
+instances of type e2-small in different regions of the              In order to study the block propagation performance of
+                                                                  the kadcast-ng prototype, we evaluated its unsolicited
+ 2 https://git.tu-berlin.de/rohrer/kadcast-ng-public              broadcast in comparison to the Bitcoin Core baseline with
+                                                                                                                                              13
+
+
+
+and without compact block [10] relaying enabled. Over the                            Table II: Related protocols
+measurement period of 24 hours an average of 143 blocks were
+                                                                                                                                    lay
+produced and propagated in the described testbed scenarios                                                                   lay ver ion
+                                                                                                                         Over ed O agat ation
+of 1,000 nodes, each of which recorded the time the blocks                                                             d     ur Prop pag
+                                                                                                                    ure uct           o
+arrived from the ZeroMQ interface.                                                                            t ruct nstr lock x Pr
+                                                                   Protocol        Method                   S        U     B     T
+   The results are shown in Figure 8: Firstly, we observe          Kadcast         Broadcast delegation   •      -     •      ◦
+that the characteristics of the block propagation behavior         BIP 152 [10]    Compact blocks         ◦     •      •       -
+concur with the simulated scenarios, thereby validating our        Erlay [11]      Set reconciliation     ◦     •      -       •
+prior results. Secondly, we observe that also in the testbed       Graphene [12]   Set reconciliation     ◦     •      •       -
+deployment Kadcast is able to show its benefits, resulting a       Velocity [13]   Fountain codes         ◦     •      •       -
+
+block delivery time that is on average 43% faster than the                                       ◦ “can be used for”       • “designed for”
+header-based propagation of Bitcoin Core, and even still 27%
+faster than the case with enabled compact block relay.
+                                                                     Third-party relay networks, such as bloXroute [9] or
+   The evaluation of the QUIC-based kadcast-ng prototype
+                                                                  FIBRE [8] aim to improve the block distribution. While the
+implementation therefore does not only show the general fea-
+                                                                  emergence of these proposals clearly show the urgency of
+sibility of a global-scale deployment of the Kadcast protocol,
+                                                                  the problem, we consider them orthogonal to the goal of
+but also once more underlines its significant impact on the
+                                                                  improving the peer-to-peer networks of blockchain systems
+block propagation performance in many scenarios.
+                                                                  themselves. Additionally, results suggest [5] that a separate
+                    VII. R ELATED W ORK                           relay network has a negligible effect over switching to a faster,
+                                                                  i.e., unsolicited block propagation scheme. Moreover, since
+   In recent years, a large body of work proposed improve-        such relay networks involve some central peer management
+ments for blockchain networks.                                    and coordination, they do not meet the blockchain design goals
+   Orthogonal to the core of the Kadcast broadcast protocol, a
+                                                                  of decentralization.
+number of contributions deal with private transaction relaying.
+                                                                     In general, the Kadcast protocol dictates the overlay struc-
+For example, Venkatakrishnan, Fanti, and Viswanath [46] and
+                                                                  ture and the distributed algorithm for information dissemina-
+Fanti et al. [47] propose protocol redesigns that improve
+                                                                  tion only. Messaging formats and handshakes between peers
+anonymity of transaction propagation in the Bitcoin network.
+                                                                  still can make use of improvements such as compact blocks
+Similarly, Naumenko et al. [11] recently proposed a more
+                                                                  as in Bitcoin’s improvement proposal BIP 152 [10] or alike.
+bandwidth-efficient protocol for transaction dissemination in
+                                                                  Principally, Kadcast is compatible with related work such
+the Bitcoin network. While these prior works are concerned
+                                                                  as the previously mentioned Erlay [11], Graphene [12], and
+with transaction propagation, Kadcast is mainly concerned
+                                                                  Velocity [13]. Similarly, Kadcast can be combined with an ad-
+with block propagation, which is currently not considered
+                                                                  ditional relay network—if desired. We summarize, categorize,
+to have additional privacy requirements. Yet, for improved
+                                                                  and compare related protocols in Table II.
+privacy, we in fact build upon the main idea proposed by
+                                                                     Beyond cryptocurrencies, contributions focusing on the
+Venkatakrishnan, Fanti, and Viswanath and extended Kadcast
+                                                                  broadcast in structured peer-to-peer networks are also relevant
+in this paper. We therefore also provide an example for how
+                                                                  for our work. El-Ansary et al. [59] realize a broadcast opera-
+these protocols can be integrated in Kadcast.
+                                                                  tion based on the overlay structure Chord [60]. Furthermore,
+   The Graphene protocol [12] proposes a more efficient block
+                                                                  a number of entries are concerned with the broadcasting
+transmission protocol based on Bloom filters, specifically In-
+                                                                  operation in Kademlia [15]-based overlay networks [24, 61,
+vertible Bloom Lookup Tables (IBLTs). This scheme augments
+                                                                  62]. Of these contributions, we highlight the work by Czirkos
+the concept of compact blocks to enable higher bandwidth
+                                                                  and Hossz [24], as parts of Kadcast are based on the proposed
+utilization by only retrieving transactions missing from the
+                                                                  scheme. However, to the best of our knowledge, we are first
+transaction mempool, which however accepts the possibility of
+                                                                  to adopt and evaluate a broadcasting algorithm based on a
+an increased worst-case block propagation delay. Similarly, the
+                                                                  structured peer-to-peer network in the setting of a real-world
+Velocity protocol [13] uses FEC on top of the existing network
+                                                                  application with respective additional requirements, e.g., in
+architecture. While improving on some aspects, such as the
+                                                                  terms of security.
+messaging overhead of the current block delivery method
+in Bitcoin, these protocols do not fundamentally change the
+                                                                                         VIII. C ONCLUSION
+prevalent network and block propagation model. In particular,
+they do not address issues that are inherent to unstructured         In this work, we studied Kadcast, a new protocol for
+overlay networks. Kadcast however also tackles the overlay        fast, efficient, and secure block and transaction propagation
+structure and the dissemination protocol.                         in blockchain networks. We analyzed Kadcast’s reliability,
+   Decker and Wattenhofer [6] deploy a highly connected high      security, and privacy, and showed its merits through extensive
+capacity node, which effectively reduces the network diameter.    simulative evaluations. Furthermore, we provided a prototype
+While the approach has a positive effect on the propagation       implementation and utilized it to confirm our prior results
+delay, it also leads to a more centralized network design.        through deployment in a global-scale cloud-based testbed.
+Kadcast is able to improve the propagation delay without          Finally, through our work, we hope to further the discussion
+sacrificing decentralization.                                     about alternative transport protocols in the blockchain space.
+                                                                                                                                                                       14
+
+
+
+                                 R EFERENCES                                                       chitectures, and Protocols for Computer Communications, Karlsruhe,
+ [1]   S. Nakamoto, Bitcoin: A peer-to-peer electronic cash system, 2008.                          Germany, Aug. 2003, pp. 407–418.
+ [2]   K. Croman, C. Decker, I. Eyal, A. E. Gencer, A. Juels, A. E. Kosba, A.               [21]   V. Buterin. “A next-generation smart contract and decentralized appli-
+       Miller, P. Saxena, E. Shi, E. G. Sirer, D. Song, and R. Wattenhofer, “On                    cation platform.” (2014), [Online]. Available: https://ethereum.org/en/
+       scaling decentralized blockchains - a position paper,” in BITCOIN ’16:                      whitepaper/.
+       Proceedings of the 3rd Workshop on Bitcoin Research, Christ Church,                  [22]   T. Neudecker and H. Hartenstein, “Network layer aspects of permis-
+       Barbados, Feb. 2016, pp. 106–125.                                                           sionless blockchains,” IEEE Communications Surveys and Tutorials,
+ [3]   I. Eyal, A. E. Gencer, E. G. Sirer, and R. van Renesse, “Bitcoin-                           vol. 21, no. 1, pp. 838–857, 2019.
+       ng: A scalable blockchain protocol,” in NSDI ’16: Proceedings of                     [23]   E. Heilman, A. Kendler, A. Zohar, and S. Goldberg, “Eclipse attacks on
+       the 13th USENIX Symposium on Networked Systems Design and                                   bitcoin’s peer-to-peer network,” in USENIX Security ’15: Proceedings
+       Implementation, Santa Clara, CA, USA, Mar. 2016, pp. 45–59.                                 of the 24th USENIX Security Symposium, Washington, DC, USA, Aug.
+ [4]   Y. Sompolinsky, Y. Lewenberg, and A. Zohar, “SPECTRE: a fast and                            2015, pp. 129–144.
+       scalable cryptocurrency protocol,” IACR Cryptology ePrint Archive,                   [24]   Z. Czirkos and G. Hossz, “Solution for the broadcasting in the
+       vol. 2016, p. 1159, 2016.                                                                   kademlia peer-to-peer overlay,” Computer Networks, vol. 57, no. 8,
+ [5]   A. Gervais, G. Karame, K. Wst, V. Glykantzis, H. Ritzdorf, and S. Cap-                      pp. 1853–1862, 2013.
+       kun, “On the security and performance of proof of work blockchains,”                 [25]   M. Luby, A. Shokrollahi, M. Watson, T. Stockhammer, and L. Minder,
+       in CCS ’16: Proceedings of the 23rd ACM SIGSAC Conference on                                RaptorQ Forward Error Correction Scheme for Object Delivery, RFC
+       Computer and Communications Security, Vienna, Austria, Oct. 2016.                           6330 (Proposed Standard), RFC, Fremont, CA, USA: RFC Editor, Aug.
+ [6]   C. Decker and R. Wattenhofer, “Information propagation in the bitcoin                       2011. DOI: 10.17487/RFC6330. [Online]. Available: https://www.rfc-
+       network,” in P2P ’13: Proceedings of the 13th IEEE International                            editor.org/rfc/rfc6330.txt.
+       Conference on Peer-to-Peer Computing, Trento, Italy, Sep. 2013, pp. 1–               [26]   G. Urdaneta, G. Pierre, and M. van Steen, “A survey of DHT security
+       10.                                                                                         techniques,” ACM Comput. Surv., vol. 43, no. 2, 8:1–8:49, 2011.
+ [7]   Y. Sompolinsky and A. Zohar, “Secure high-rate transaction processing                [27]   T. Cholez, I. Chrisment, and O. Festor, “Evaluation of sybil attacks
+       in bitcoin,” in FC ’15: Proceedings of the 19th International Confer-                       protection schemes in KAD,” in AIMS ’09: Proceedings of the 3rd
+       ence on Financial Cryptography and Data Security, Isla Verde, Puerto                        International Conference on Autonomous Infrastructure, Management
+       Rico, Jan. 2015, pp. 507–527.                                                               and Security, Enschede, The Netherlands, 2009, pp. 70–82.
+ [8]   F. I. B. R. E. (FIBRE). “Homepage.” (2017), [Online]. Available: http:               [28]   P. Wang, J. Tyra, E. Chan-Tin, T. Malchow, D. F. Kune, N. Hopper,
+       //bitcoinfibre.org.                                                                         and Y. Kim, “Attacking the kad network,” in 4th International ICST
+ [9]   U. Klarman, S. Basu, A. Kuzmanovic, and E. G. Sirer, Bloxroute: A                           Conference on Security and Privacy in Communication Networks, SE-
+       scalable trustless blockchain distribution network whitepaper.                              CURECOMM 2008, Istanbul, Turkey, September 22-25, 2008, Istanbul,
+[10]   M. Corallo. “Bip 152: Compact block relay.” (Apr. 2016), [Online].                          Turkey, 2008, p. 23.
+       Available: https : / / github. com / bitcoin / bips / blob / master / bip - 0152 .   [29]   P. Wang, J. Tyra, E. Chan-Tin, T. Malchow, D. F. Kune, N. Hopper,
+       mediawiki.                                                                                  and Y. Kim, “Attacking the kad network - real world evaluation and
+[11]   G. Naumenko, G. Maxwell, P. Wuille, A. Fedorova, and I. Beschast-                           high fidelity simulation using DVN,” Security and Communication
+       nikh, “Erlay: Efficient transaction relay for bitcoin,” in CCS ’19:                         Networks, vol. 6, no. 12, pp. 1556–1575, 2013.
+       Proceedings of the 2019 ACM SIGSAC Conference on Computer and                        [30]   M. Steiner, T. En-Najjary, and E. W. Biersack, “Exploiting KAD:
+       Communications Security, London, UK, Nov. 2019, pp. 817–831.                                possible uses and misuses,” Computer Communication Review, vol. 37,
+[12]   A. P. Ozisik, G. Andresen, B. N. Levine, D. Tapp, G. Bissias,                               no. 5, pp. 65–70, 2007.
+       and S. Katkuri, “Graphene: Efficient interactive set reconciliation                  [31]   I. Baumgart and S. Mies, “S/kademlia: A practicable approach towards
+       applied to blockchain propagation,” in SIGCOMM ’19: Proceedings                             secure key-based routing,” in ICPADS ’07: Proceedings of the 13th In-
+       of the 2019 Conference on Applications, Technologies, Architectures,                        ternational Conference on Parallel and Distributed Systems, Hsinchu,
+       and Protocols for Computer Communications, Beijing, China, 2019,                            Taiwan, Dec. 2007, pp. 1–8.
+       pp. 303–317.                                                                         [32]   M. Kohnen, M. Leske, and E. P. Rathgeb, “Conducting and optimizing
+[13]   N. Chawla, H. W. Behrens, D. Tapp, D. Boscovic, and K. S. Candan,                           eclipse attacks in the kad peer-to-peer network,” in NETWORK-
+       “Velocity: Scalability improvements in block propagation through rate-                      ING ’09: Proceedings of the 8th International IFIP-TC 6 Networking
+       less erasure coding,” in ICBC ’19: Proceedings of the 1st International                     Conference, Aachen, Germany, 2009, pp. 104–116.
+       Conference on Blockchain and Cryptocurrency, Seoul, South Korea,                     [33]   T. Locher, D. Mysicka, S. Schmid, and R. Wattenhofer, “Poisoning the
+       May 2019.                                                                                   kad network,” in ICDCN ’10: Proceedings of the 11th International
+[14]   E. Rohrer and F. Tschorsch, “Kadcast: A structured approach to                              Conference on Distributed Computing and Networking, Kolkata, India,
+       broadcast in blockchain networks,” in AFT ’19: Proceedings of the                           2010, pp. 195–206.
+       first ACM conference on Advances in Financial Technologies, Zurich,                  [34]   J. R. Douceur, “The sybil attack,” in IPTPS ’02: Proceedings of the
+       Switzerland, Oct. 2019.                                                                     1st International Workshop on Peer-to-Peer Systems, Cambridge, MA,
+[15]   P. Maymounkov and D. Mazires, “Kademlia: A peer-to-peer informa-                            USA, 2002, pp. 251–260.
+       tion system based on the XOR metric,” in IPTPS ’02: Proceedings of                   [35]   Y. Marcus, E. Heilman, and S. Goldberg, “Low-resource eclipse attacks
+       the 1st International Workshop on Peer-to-Peer Systems, Cambridge,                          on ethereum’s peer-to-peer network.,” IACR Cryptology ePrint Archive,
+       MA, USA, 2002, pp. 53–65.                                                                   vol. 2018, p. 236, 2018.
+[16]   A. Langley et al., “The QUIC transport protocol: Design and internet-                [36]   M. Vasek, M. Thornton, and T. Moore, “Empirical analysis of denial-
+       scale deployment,” in SIGCOMM ’17: Proceedings of the 2017 Con-                             of-service attacks in the bitcoin ecosystem,” in BITCOIN ’14: Proceed-
+       ference of the ACM Special Interest Group on Data Communication,                            ings of the 1st Workshop on Bitcoin Research, Barbados, Mar. 2014,
+       Los Angeles, CA, USA, 2017, pp. 183–196.                                                    pp. 57–71.
+[17]   A. Kiayias, A. Russell, B. David, and R. Oliynykov, “Ouroboros: A                    [37]   P. Koshy, D. Koshy, and P. McDaniel, “An analysis of anonymity
+       provably secure proof-of-stake blockchain protocol,” in CRYPTO ’17:                         in bitcoin using p2p network traffic,” in FC ’14: Proceedings of the
+       Proceedings of the 37th Conference on Advances in Cryptology, Santa                         18th International Conference on Financial Cryptography and Data
+       Barbara, CA, USA, Aug. 2017, pp. 357–388.                                                   Security, Barbados, Mar. 2014, pp. 469–485.
+[18]   M. Castro and B. Liskov, “Practical byzantine fault tolerance,” in                   [38]   A. Biryukov, D. Khovratovich, and I. Pustogarov, “Deanonymisation
+       OSDI ’99: Proceedings of the 3rd USENIX Symposium on Operating                              of clients in bitcoin p2p network,” in CCS ’14: Proceedings of the
+       Systems Design and Implementation, New Orleans, LA, USA, Feb.                               21st ACM Conference on Computer and Communications Security,
+       1999, pp. 173–186.                                                                          Scottsdale, AZ, USA, Nov. 2014, pp. 15–29.
+[19]   J. A. Garay, A. Kiayias, and N. Leonardos, “Full analysis of nakamoto                [39]   G. C. Fanti and P. Viswanath, “Deanonymization in the bitcoin P2P
+       consensus in bounded-delay networks,” IACR Cryptol. ePrint Arch.,                           network,” in NIPS ’17: Proceedings of 30th Annual Conference on
+       vol. 2020, p. 277, 2020. [Online]. Available: https://eprint.iacr.org/                      Neural Information Processing Systems, Long Beach, CA, USA, Dec.
+       2020/277.                                                                                   2017.
+[20]   Y. Chawathe, S. Ratnasamy, L. Breslau, N. Lanham, and S. Shenker,                    [40]   S. Feld, M. Schnfeld, and M. Werner, “Analyzing the deployment
+       “Making gnutella-like p2p systems scalable,” in SIGCOMM ’03:                                of bitcoin’s P2P network under an as-level perspective,” in ANT ’14:
+       Proceedings of the 2003 Conference on Applications, Technologies, Ar-                       Proceedings of the 5th International Conference on Ambient Systems,
+                                                                                                   Networks and Technologies, Hasselt, Belgium, Jun. 2014, pp. 1121–
+                                                                                                   1126.
+                                                                                                                                                                    15
+
+
+
+[41]   M. Apostolaki, A. Zohar, and L. Vanbever, “Hijacking bitcoin: Routing   [52]   R. Team. “Rust. a language empowering everyone to build reliable
+       attacks on cryptocurrencies,” in SP ’17: Proceedings of the 38th               and efficient software.” (2021), [Online]. Available: https://www.rust-
+       IEEE Symposium on Security and Privacy, San Jose, CA, USA, 2017,               lang.org/ (visited on 07/01/2021).
+       pp. 375–392.                                                            [53]   Bitcoin Core. “Homepage.” (2021), [Online]. Available: https : / /
+[42]   N. Borisov, “Computational puzzles as sybil defenses,” in P2P ’06:             bitcoincore.org (visited on 07/07/2021).
+       Proceedings of the 6th IEEE International Conference on Peer-to-Peer    [54]   Bitcoin Project. “Bitcoin rpc api.” (2021), [Online]. Available: https://
+       Computing, Cambridge, United Kingdom, 2006, pp. 171–176.                       developer.bitcoin.org/reference/rpc/index.html (visited on 07/01/2021).
+[43]   V. Vishnumurthy, S. Chandrakumar, and E. G. Sirer, “Karma: A            [55]   The ZeroMQ Authors. “Zeromq. an open-source universal messaging
+       secure economic framework for peer-to-peer resource sharing,” in               library.” (2021), [Online]. Available: https://zeromq.org/ (visited on
+       P2PEcon ’03: Proceedings of the 1st Workshop on Economics of Peer-             07/01/2021).
+       to-Peer Systems, Berkeley, CA, USA, Jun. 2003.                          [56]   Rust Bitcoin Developers. “Rust bitcoin library.” (2021), [Online].
+[44]   E. Rescorla and N. Modadugu, Datagram Transport Layer Security                 Available: https : / / github . com / rust - bitcoin / rust - bitcoin (visited on
+       Version 1.2, RFC 6347 (Proposed Standard), RFC, Updated by RFCs                07/01/2021).
+       7507, 7905, Fremont, CA, USA: RFC Editor, Jan. 2012. DOI: 10 .          [57]   J.-C. B. Dirkjan Ochtman Benjamin Saunders. “Quinn. pure-rust quic
+       17487/RFC6347. [Online]. Available: https://www.rfc-editor.org/rfc/            protocol implementation.” (2021), [Online]. Available: https://github.
+       rfc6347.txt.                                                                   com/quinn-rs/quinn (visited on 07/01/2021).
+[45]   G. A. Spedicato, “Discrete Time Markov Chains with R,” The R            [58]   Blockchain.com. “Bitcoin. average transactions per block.” (2021),
+       Journal, vol. 9, no. 2, pp. 84–104, 2017.                                      [Online]. Available: https://www.blockchain.com/charts/n-transactions-
+[46]   S. B. Venkatakrishnan, G. C. Fanti, and P. Viswanath, “Dandelion:              per-block (visited on 07/01/2021).
+       Redesigning the bitcoin network for anonymity,” Proceedings of the      [59]   S. El-Ansary, L. O. Alima, P. Brand, and S. Haridi, “Efficient broadcast
+       ACM on Measurement and Analysis of Computing Systems (POMACS),                 in structured P2P networks,” in IPTPS ’03: Proceedings of the 2nd
+       2017.                                                                          International Workshop on Peer-to-Peer Systems, Berkeley, CA, USA,
+[47]   G. C. Fanti, S. B. Venkatakrishnan, S. Bakshi, B. Denby, S. Bhar-              2003, pp. 304–314.
+       gava, A. Miller, and P. Viswanath, “Dandelion++: Lightweight cryp-      [60]   I. Stoica, R. T. Morris, D. R. Karger, M. F. Kaashoek, and H. Bal-
+       tocurrency networking with formal anonymity guarantees,” POMACS,               akrishnan, “Chord: A scalable peer-to-peer lookup service for internet
+       vol. 2, no. 2, 29:1–29:35, 2018.                                               applications,” in SIGCOMM ’01: Proceedings of the 2001 Conference
+[48]   E. Rohrer and F. Tschorsch, “Blockchain layer zero: Characterizing             on Applications, Technologies, Architectures, and Protocols for Com-
+       the bitcoin network through measurements, models, and simulations,”            puter Communications, San Diego, CA, USA, 2001, pp. 149–160.
+       in LCN ’21: Proceedings of the 46th IEEE International Conference       [61]   A. D. Peris, J. M. Hernndez, and E. Huedo, “Evaluation of the broad-
+       on Local Computer Networks, Online, 2021.                                      cast operation in kademlia,” in HPCC ’12: 14th IEEE International
+[49]   nsnam. “Ns-3: A discrete-event network simulator for internet sys-             Conference on High Performance Computing and Communication,
+       tems.” (2021), [Online]. Available: https://www.nsnam.org.                     Liverpool, United Kingdom, 2012, pp. 756–763.
+[50]   Etherscan.io. “Ethereum block size history.” (2019), [Online]. Avail-   [62]   A. D. Peris, J. M. Hernndez, and E. Huedo, “Evaluation of alternatives
+       able: https://etherscan.io/chart/blocksize.                                    for the broadcast operation in kademlia under churn,” Peer-to-Peer
+[51]   I. Eyal and E. G. Sirer, “Majority is not enough: Bitcoin mining               Networking and Applications, vol. 9, no. 2, pp. 313–327, 2016.
+       is vulnerable,” in FC ’14: Proceedings of the 18th International
+       Conference on Financial Cryptography and Data Security, Barbados,
+       Mar. 2014, pp. 436–454.
+

@@ -1,16 +1,18 @@
 #include "assert.h"
 #include "classic_node.h"
+#include "kadcast_node.h"
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <numeric>
 #include <map>
 #include <memory>
 #include <random>
 #include <set>
 #include <stdexcept>
 
-std::set<std::shared_ptr<ClassicNode>> generate_nodes(Simulator& simulator, size_t nr_nodes, double z_0, double z_1, double cpu_ratio, double txn_interarrival_time_mean, double global_block_interarrival_time_mean)
+std::set<std::shared_ptr<ClassicNode>> generate_nodes(Simulator& simulator, size_t nr_nodes, double z_0, double z_1, double cpu_ratio, double txn_interarrival_time_mean, double global_block_interarrival_time_mean, bool use_kadcast, size_t beta, std::mt19937& overlay_rng)
 {
     std::set<std::shared_ptr<ClassicNode>> nodes;
 
@@ -26,24 +28,57 @@ std::set<std::shared_ptr<ClassicNode>> generate_nodes(Simulator& simulator, size
     size_t nr_high_cpu = nr_slow_high_cpu + nr_fast_high_cpu;
     double hashing_power_low_cpu = 1.0 / (nr_low_cpu + cpu_ratio * nr_high_cpu);
     double hashing_power_high_cpu = cpu_ratio * hashing_power_low_cpu;
+    double constexpr lowcpu_validation_throughput_kb_per_ms = 10.0;
 
-    std::tuple<size_t, bool, double> node_types[] = {
-        { nr_slow_low_cpu, true, hashing_power_low_cpu },
-        { nr_slow_high_cpu, true, hashing_power_high_cpu },
-        { nr_fast_low_cpu, false, hashing_power_low_cpu },
-        { nr_fast_high_cpu, false, hashing_power_high_cpu },
+    std::tuple<size_t, bool, bool, double> node_types[] = {
+        { nr_slow_low_cpu, true, true, hashing_power_low_cpu },
+        { nr_slow_high_cpu, true, false, hashing_power_high_cpu },
+        { nr_fast_low_cpu, false, true, hashing_power_low_cpu },
+        { nr_fast_high_cpu, false, false, hashing_power_high_cpu },
     };
 
-    for (auto [nr, is_slow_node, hashing_power] : node_types) {
+    size_t lbit_width = 1;
+    while ((size_t { 1 } << lbit_width) < nr_nodes)
+        ++lbit_width;
+
+    std::vector<LbitID> overlay_ids(size_t { 1 } << lbit_width);
+    std::iota(overlay_ids.begin(), overlay_ids.end(), 0);
+    std::shuffle(overlay_ids.begin(), overlay_ids.end(), overlay_rng);
+    size_t overlay_id_index = 0;
+
+    for (auto [nr, is_slow_node, is_lowcpu_node, hashing_power] : node_types) {
         double block_interarrival_time_mean = global_block_interarrival_time_mean / hashing_power;
+        double block_validation_throughput_kb_per_ms = lowcpu_validation_throughput_kb_per_ms * (is_lowcpu_node ? 1.0 : cpu_ratio);
         for (size_t i = 0; i < nr; ++i) {
-            nodes.insert(std::make_shared<ClassicNode>(
-                simulator,
-                is_slow_node,
-                (hashing_power == hashing_power_low_cpu),
-                txn_interarrival_time_mean,
-                block_interarrival_time_mean));
+            if (use_kadcast) {
+                nodes.insert(std::make_shared<KadcastNode>(
+                    simulator,
+                    is_slow_node,
+                    is_lowcpu_node,
+                    txn_interarrival_time_mean,
+                    block_interarrival_time_mean,
+                    block_validation_throughput_kb_per_ms,
+                    overlay_ids.at(overlay_id_index++),
+                    lbit_width,
+                    beta));
+            } else {
+                nodes.insert(std::make_shared<ClassicNode>(
+                    simulator,
+                    is_slow_node,
+                    is_lowcpu_node,
+                    txn_interarrival_time_mean,
+                    block_interarrival_time_mean,
+                    block_validation_throughput_kb_per_ms));
+            }
         }
+    }
+
+    if (use_kadcast) {
+        std::map<NodeID, LbitID> node_lbit_ids;
+        for (auto const& node : nodes)
+            node_lbit_ids[node->node_id] = std::dynamic_pointer_cast<KadcastNode>(node)->lbit_id;
+        for (auto const& node : nodes)
+            std::dynamic_pointer_cast<KadcastNode>(node)->initialize_routing(node_lbit_ids);
     }
 
     return nodes;
@@ -181,19 +216,26 @@ std::map<NodeID, std::set<NodeID>> generate_random_undirected_graph(std::mt19937
     return adj_list;
 }
 
-std::map<NodeID, std::map<NodeID, Simulator::LinkDelay>> generate_link_delays(std::set<std::shared_ptr<ClassicNode>> const& nodes, std::map<NodeID, std::set<NodeID>> const& adj_list, std::function<Simulator::LinkDelay(ClassicNode const&, ClassicNode const&)> generate_link)
+std::map<NodeID, std::map<NodeID, Simulator::LinkProperties>> generate_link_delays(std::set<std::shared_ptr<ClassicNode>> const& nodes, std::map<NodeID, std::set<NodeID>> const& adj_list, std::function<Simulator::LinkProperties(ClassicNode const&, ClassicNode const&)> generate_link)
 {
-    std::map<NodeID, std::map<NodeID, Simulator::LinkDelay>> link_params;
+    std::map<NodeID, std::map<NodeID, Simulator::LinkProperties>> link_params;
 
     std::map<NodeID, std::shared_ptr<ClassicNode const>> node_id_to_node;
     for (auto const& n : nodes)
         node_id_to_node[n->node_id] = n;
 
-    for (auto node : nodes) {
-        std::map<NodeID, Simulator::LinkDelay> node_link_params;
-        for (auto neighbor_id : adj_list.at(node->node_id))
-            node_link_params[neighbor_id] = generate_link(*node, *node_id_to_node[neighbor_id]);
-        link_params[node->node_id] = node_link_params;
+    for (auto const& node : nodes)
+        link_params[node->node_id] = {};
+
+    for (auto const& [node_id, neighbors] : adj_list) {
+        for (auto neighbor_id : neighbors) {
+            if (neighbor_id < node_id)
+                continue;
+
+            auto properties = generate_link(*node_id_to_node[node_id], *node_id_to_node[neighbor_id]);
+            link_params[node_id][neighbor_id] = properties;
+            link_params[neighbor_id][node_id] = properties;
+        }
     }
 
     return link_params;

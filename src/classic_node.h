@@ -60,24 +60,31 @@ private:
     std::map<TxnID, std::shared_ptr<Txn>> mempool;
     // Arohan
 
+protected:
     void start_mining_new_block();
+    virtual void forward_block(std::shared_ptr<Block> block, NodeID from);
+    virtual void forward_txn(std::shared_ptr<Txn> txn, NodeID from);
+    virtual void announce_local_block(std::shared_ptr<Block> block);
+    virtual void announce_local_txn(std::shared_ptr<Txn> txn);
+    bool knows_block(BlockID block_id) const;
+    bool knows_txn(TxnID txn_id) const;
 
 public:
     bool const is_slow_node;
     bool const is_lowcpu_node;
 
-    ClassicNode(Simulator& simulator, bool is_slow_node, bool is_lowcpu_node, double txn_interarrival_time_mean, double block_interarrival_time_mean);
+    ClassicNode(Simulator& simulator, bool is_slow_node, bool is_lowcpu_node, double txn_interarrival_time_mean, double block_interarrival_time_mean, double block_validation_throughput_kb_per_ms);
 
     /*
      * callbacks for receiving blocks, txns
      */
-    void receive(std::shared_ptr<Block> block, NodeID from) override;
+    virtual void receive(std::shared_ptr<Block> block, NodeID from) override;
     void receive(std::shared_ptr<Txn> txn, NodeID from) override;
 
     /*
      * callbacks for mine_block, create_txn timers
      */
-    void process(std::shared_ptr<MineBlock> create_block) override;
+    virtual void process(std::shared_ptr<MineBlock> create_block) override;
     void process(std::shared_ptr<CreateTxn> create_txn) override;
 
     /*

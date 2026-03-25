@@ -6,3 +6,4 @@ build/
 *.png
 *.log
 blockchain-simulator-output*/
+results*.txt
