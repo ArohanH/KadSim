@@ -40,6 +40,17 @@ struct OutputStats {
      * stale block rate
      */
     size_t stale_blocks;
+
+    /*
+     * upload contention stats
+     */
+    size_t contention_total_sends;
+    size_t contention_queued_sends;
+    double contention_mean_wait_ms;
+    double contention_p50_wait_ms;
+    double contention_p90_wait_ms;
+    double contention_p99_wait_ms;
+    double contention_max_wait_ms;
 };
 void write_stats_to_py_file(std::string filename, OutputStats output_stats);
 

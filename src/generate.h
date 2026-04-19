@@ -11,7 +11,7 @@
 
 class Simulator;
 
-std::set<std::shared_ptr<ClassicNode>> generate_nodes(Simulator& simulator, size_t nr_nodes, double z_0, double z_1, double cpu_ratio, double txn_interarrival_time_mean, double global_block_interarrival_time_mean, bool use_kadcast, size_t beta, std::mt19937& overlay_rng);
+std::set<std::shared_ptr<ClassicNode>> generate_nodes(Simulator& simulator, size_t nr_nodes, double z_0, double z_1, double cpu_ratio, double txn_interarrival_time_mean, double global_block_interarrival_time_mean, bool use_kadcast, size_t beta, double proximity_alpha, bool adaptive_beta, bool dynamic_beta, std::mt19937& overlay_rng);
 std::map<NodeID, std::set<NodeID>> generate_random_undirected_graph(std::mt19937& rng, std::set<NodeID> const& nodes, size_t min_deg, size_t max_deg);
 std::map<NodeID, std::map<NodeID, Simulator::LinkProperties>> generate_link_delays(std::set<std::shared_ptr<ClassicNode>> const& nodes, std::map<NodeID, std::set<NodeID>> const& adj_list, std::function<Simulator::LinkProperties(ClassicNode const&, ClassicNode const&)> generate_link);
 

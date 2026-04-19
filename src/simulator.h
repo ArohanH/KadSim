@@ -89,6 +89,12 @@ private:
     size_t total_messages_sent;
     double total_traffic_kb;
 
+    /*
+     * upload contention tracking
+     */
+    std::vector<double> upload_wait_times;
+    std::map<NodeID, std::vector<double>> per_node_upload_waits;
+
     void recompute_routes();
     void schedule_delivery_hop(NodeID logical_sender, std::shared_ptr<Sendable> sendable, NodeID current_hop, NodeID next_hop, NodeID final_recipient, double send_time);
 
@@ -146,6 +152,31 @@ public:
 
     size_t get_total_messages_sent() const { return total_messages_sent; }
     double get_total_traffic_kb() const { return total_traffic_kb; }
+    std::vector<double> const& get_upload_wait_times() const { return upload_wait_times; }
+
+    double get_node_recent_upload_wait(NodeID node, size_t window = 20) const
+    {
+        auto it = per_node_upload_waits.find(node);
+        if (it == per_node_upload_waits.end() || it->second.empty())
+            return 0.0;
+        auto const& waits = it->second;
+        size_t start = waits.size() > window ? waits.size() - window : 0;
+        double sum = 0.0;
+        for (size_t i = start; i < waits.size(); ++i)
+            sum += waits[i];
+        return sum / (waits.size() - start);
+    }
+
+    double get_path_distance(NodeID from, NodeID to) const
+    {
+        auto it = path_distances.find(from);
+        if (it == path_distances.end())
+            return 1e9;
+        auto jt = it->second.find(to);
+        if (jt == it->second.end())
+            return 1e9;
+        return jt->second;
+    }
 
     /*
      * functions for managing the simulation

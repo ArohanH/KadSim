@@ -139,6 +139,26 @@ def print_single(stats, label=""):
     print(f"  In longest chain:")
     print(f"  Fast+HighCPU: {fh}  Fast+LowCPU: {fl}  Slow+HighCPU: {sh}  Slow+LowCPU: {sl}")
 
+    # Upload contention stats
+    c_total = stats.get("contention_total_sends", 0)
+    c_queued = stats.get("contention_queued_sends", 0)
+    c_frac = stats.get("contention_fraction", 0)
+    c_mean = stats.get("contention_mean_wait_ms", 0)
+    c_p50 = stats.get("contention_p50_wait_ms", 0)
+    c_p90 = stats.get("contention_p90_wait_ms", 0)
+    c_p99 = stats.get("contention_p99_wait_ms", 0)
+    c_max = stats.get("contention_max_wait_ms", 0)
+    if c_total > 0:
+        print(f"")
+        print(f"  --- Upload Contention ---")
+        print(f"  Total sends:            {c_total}")
+        print(f"  Queued sends:           {c_queued} ({c_frac*100:.1f}%)")
+        print(f"  Mean wait:              {c_mean:.2f} ms")
+        print(f"  p50 wait:               {c_p50:.2f} ms")
+        print(f"  p90 wait:               {c_p90:.2f} ms")
+        print(f"  p99 wait:               {c_p99:.2f} ms")
+        print(f"  Max wait:               {c_max:.2f} ms")
+
 
 def print_comparison(classic, kadcast):
     """Print side-by-side comparison."""
@@ -187,6 +207,37 @@ def print_comparison(classic, kadcast):
         print(f"  {'Median p90':<30} {c_a['median_p90_ms']:>12.1f} {k_a['median_p90_ms']:>12.1f} {p90_improvement:>11.1f}%")
         print(f"  {'Median p99':<30} {c_a['median_p99_ms']:>12.1f} {k_a['median_p99_ms']:>12.1f}")
         print(f"  {'Mean coverage':<30} {c_a['mean_coverage']*100:>11.1f}% {k_a['mean_coverage']*100:>11.1f}%")
+
+    # Upload contention comparison
+    cc_total = classic.get("contention_total_sends", 0)
+    kc_total = kadcast.get("contention_total_sends", 0)
+    if cc_total > 0 or kc_total > 0:
+        cc_queued = classic.get("contention_queued_sends", 0)
+        kc_queued = kadcast.get("contention_queued_sends", 0)
+        cc_frac = classic.get("contention_fraction", 0)
+        kc_frac = kadcast.get("contention_fraction", 0)
+        cc_mean = classic.get("contention_mean_wait_ms", 0)
+        kc_mean = kadcast.get("contention_mean_wait_ms", 0)
+        cc_p50 = classic.get("contention_p50_wait_ms", 0)
+        kc_p50 = kadcast.get("contention_p50_wait_ms", 0)
+        cc_p90 = classic.get("contention_p90_wait_ms", 0)
+        kc_p90 = kadcast.get("contention_p90_wait_ms", 0)
+        cc_p99 = classic.get("contention_p99_wait_ms", 0)
+        kc_p99 = kadcast.get("contention_p99_wait_ms", 0)
+        cc_max = classic.get("contention_max_wait_ms", 0)
+        kc_max = kadcast.get("contention_max_wait_ms", 0)
+
+        print(f"\n  --- Upload Contention ---")
+        print(f"  {'Metric':<30} {'Classic':>12} {'KADcast':>12}")
+        print(f"  {'-'*54}")
+        print(f"  {'Total sends':<30} {cc_total:>12} {kc_total:>12}")
+        print(f"  {'Queued sends':<30} {cc_queued:>12} {kc_queued:>12}")
+        print(f"  {'Contention fraction':<30} {cc_frac*100:>11.1f}% {kc_frac*100:>11.1f}%")
+        print(f"  {'Mean wait (ms)':<30} {cc_mean:>12.2f} {kc_mean:>12.2f}")
+        print(f"  {'p50 wait (ms)':<30} {cc_p50:>12.2f} {kc_p50:>12.2f}")
+        print(f"  {'p90 wait (ms)':<30} {cc_p90:>12.2f} {kc_p90:>12.2f}")
+        print(f"  {'p99 wait (ms)':<30} {cc_p99:>12.2f} {kc_p99:>12.2f}")
+        print(f"  {'Max wait (ms)':<30} {cc_max:>12.2f} {kc_max:>12.2f}")
 
     print()
 

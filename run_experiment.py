@@ -5,10 +5,11 @@ Runs both KADcast and Classic (flooding) simulations with the same parameters,
 then runs analyze.py and saves everything to a results text file.
 
 Usage:
-    python run_experiment.py <nr_nodes> <z_0> <z_1> <cpu_ratio> <txn_iat> <block_iat> <duration> [sparse|moderate|dense] [beta] [graph_seed sim_seed]
+    python run_experiment.py <nr_nodes> <z_0> <z_1> <cpu_ratio> <txn_iat> <block_iat> <duration> [sparse|moderate|dense] [beta] [alpha] [adaptive] [dynamic] [graph_seed sim_seed]
 
 Example:
-    python run_experiment.py 200 0.5 0.5 10 5000 60000 600000 dense 3 42 42
+    python run_experiment.py 200 0.5 0.5 10 5000 60000 600000 dense 3 0.5 42 42
+    python run_experiment.py 200 0.5 0.5 10 5000 60000 600000 dense 3 0.5 adaptive dynamic 42 42
     python run_experiment.py 100 0.5 0.5 10 5000 60000 600000 moderate 1
     python run_experiment.py 100 0.5 0.5 10 5000 60000 600000 sparse
 
@@ -33,7 +34,7 @@ def find_latest_output_dir(before_dirs):
 
 
 def run_simulation(binary, nr_nodes, z_0, z_1, cpu_ratio, txn_iat, block_iat,
-                   duration, protocol, density, beta, graph_seed, sim_seed):
+                   duration, protocol, density, beta, alpha, adaptive_beta, dynamic_beta, graph_seed, sim_seed):
     """Run a single simulation and return the output directory path."""
     before_dirs = set(glob.glob("blockchain-simulator-output_*"))
 
@@ -41,8 +42,13 @@ def run_simulation(binary, nr_nodes, z_0, z_1, cpu_ratio, txn_iat, block_iat,
         binary,
         str(nr_nodes), str(z_0), str(z_1), str(cpu_ratio),
         str(txn_iat), str(block_iat), str(duration),
-        protocol, density, str(beta), str(graph_seed), str(sim_seed),
+        protocol, density, str(beta), str(alpha),
     ]
+    if adaptive_beta:
+        cmd.append("adaptive")
+    if dynamic_beta:
+        cmd.append("dynamic")
+    cmd.extend([str(graph_seed), str(sim_seed)])
 
     print(f"  Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -83,6 +89,9 @@ def main():
 
     density = "dense"
     beta = 3
+    alpha = 1.0
+    adaptive_beta = False
+    dynamic_beta = False
     next_arg = 8
     if len(sys.argv) > next_arg and sys.argv[next_arg] in ("sparse", "moderate", "dense"):
         density = sys.argv[next_arg]
@@ -91,11 +100,28 @@ def main():
     if len(sys.argv) > next_arg:
         try:
             val = int(sys.argv[next_arg])
-            if 1 <= val <= 10:
+            if 1 <= val <= 200:
                 beta = val
                 next_arg += 1
         except ValueError:
             pass
+
+    if len(sys.argv) > next_arg:
+        try:
+            val = float(sys.argv[next_arg])
+            if 0.0 <= val <= 1.0:
+                alpha = val
+                next_arg += 1
+        except ValueError:
+            pass
+
+    if len(sys.argv) > next_arg and sys.argv[next_arg] == "adaptive":
+        adaptive_beta = True
+        next_arg += 1
+
+    if len(sys.argv) > next_arg and sys.argv[next_arg] == "dynamic":
+        dynamic_beta = True
+        next_arg += 1
 
     if len(sys.argv) > next_arg + 1:
         graph_seed = int(sys.argv[next_arg])
@@ -114,10 +140,13 @@ def main():
         sys.exit(1)
 
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    results_file = f"results_{density}_{nr_nodes}nodes_b{beta}_{timestamp}.txt"
+    ab_label = "+adaptive" if adaptive_beta else ""
+    db_label = "+dynamic" if dynamic_beta else ""
+    results_file = f"results_{density}_{nr_nodes}nodes_b{beta}_a{alpha}{ab_label}{db_label}_{timestamp}.txt"
 
     print(f"=" * 60)
-    print(f"  KadSim Experiment: {nr_nodes} nodes, {density} graph, beta={beta}")
+    print(f"  KadSim Experiment: {nr_nodes} nodes, {density} graph, beta={beta}, alpha={alpha}")
+    print(f"  adaptive_beta={adaptive_beta}, dynamic_beta={dynamic_beta}")
     print(f"  Seeds: graph={graph_seed}, sim={sim_seed}")
     print(f"=" * 60)
 
@@ -125,7 +154,7 @@ def main():
     print(f"\n[1/2] Running Classic (flooding) simulation...")
     classic_dir = run_simulation(
         binary, nr_nodes, z_0, z_1, cpu_ratio, txn_iat, block_iat,
-        duration, "Classic", density, beta, graph_seed, sim_seed)
+        duration, "Classic", density, beta, alpha, False, False, graph_seed, sim_seed)
 
     if not classic_dir:
         print("Classic simulation failed. Aborting.")
@@ -135,7 +164,7 @@ def main():
     print(f"\n[2/2] Running KADcast simulation...")
     kadcast_dir = run_simulation(
         binary, nr_nodes, z_0, z_1, cpu_ratio, txn_iat, block_iat,
-        duration, "Kadcast", density, beta, graph_seed, sim_seed)
+        duration, "Kadcast", density, beta, alpha, adaptive_beta, dynamic_beta, graph_seed, sim_seed)
 
     if not kadcast_dir:
         print("KADcast simulation failed. Aborting.")
@@ -152,7 +181,7 @@ def main():
         f.write(f"Generated: {timestamp}\n")
         f.write(f"Parameters: nr_nodes={nr_nodes} z_0={z_0} z_1={z_1} cpu_ratio={cpu_ratio}\n")
         f.write(f"            txn_iat={txn_iat} block_iat={block_iat} duration={duration}\n")
-        f.write(f"            density={density} beta={beta} graph_seed={graph_seed} sim_seed={sim_seed}\n")
+        f.write(f"            density={density} beta={beta} alpha={alpha} adaptive_beta={adaptive_beta} dynamic_beta={dynamic_beta} graph_seed={graph_seed} sim_seed={sim_seed}\n")
         f.write(f"Classic output:  {classic_dir}\n")
         f.write(f"KADcast output:  {kadcast_dir}\n")
         f.write(f"\n")

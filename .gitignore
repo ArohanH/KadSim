@@ -7,3 +7,7 @@ build/
 *.log
 blockchain-simulator-output*/
 results*.txt
+extract_pdf.py
+Figures/
+*.tex
+smoke*

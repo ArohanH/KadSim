@@ -20,11 +20,15 @@ size_t xor_distance_bucket(LbitID left, LbitID right)
 }
 }
 
-KadcastNode::KadcastNode(Simulator& simulator, bool is_slow_node, bool is_lowcpu_node, double txn_interarrival_time_mean, double block_interarrival_time_mean, double block_validation_throughput_kb_per_ms, LbitID lbit_id, size_t lbit_width, size_t redundancy_factor)
+KadcastNode::KadcastNode(Simulator& simulator, bool is_slow_node, bool is_lowcpu_node, double txn_interarrival_time_mean, double block_interarrival_time_mean, double block_validation_throughput_kb_per_ms, LbitID lbit_id, size_t lbit_width, size_t redundancy_factor, double proximity_alpha, bool adaptive_beta, bool dynamic_beta)
     : ClassicNode(simulator, is_slow_node, is_lowcpu_node, txn_interarrival_time_mean, block_interarrival_time_mean, block_validation_throughput_kb_per_ms),
       lbit_width(lbit_width),
       redundancy_factor(redundancy_factor),
+      proximity_alpha(proximity_alpha),
+      adaptive_beta(adaptive_beta),
+      dynamic_beta(dynamic_beta),
       buckets(lbit_width),
+      dynamic_beta_current(redundancy_factor),
       lbit_id(lbit_id)
 {
 }
@@ -41,15 +45,70 @@ void KadcastNode::initialize_routing(std::map<NodeID, LbitID> const& node_lbit_i
     }
 }
 
-std::vector<NodeID> KadcastNode::select_delegates(size_t bucket_index) const
+size_t KadcastNode::effective_beta(size_t bucket_index, size_t max_height) const
 {
-    auto delegates = buckets.at(bucket_index);
-    if (delegates.empty())
+    size_t base = redundancy_factor;
+
+    // Dynamic β: AIMD based on this node's recent upload contention
+    if (dynamic_beta) {
+        double recent_wait = simulator.get_node_recent_upload_wait(node_id, 20);
+        // Use the mutable dynamic_beta_current stored on this node.
+        // We cast away const here because effective_beta is logically
+        // a query but dynamic_beta_current is simulation state.
+        auto* self = const_cast<KadcastNode*>(this);
+        if (recent_wait > DYNAMIC_BETA_W_HIGH && self->dynamic_beta_current > DYNAMIC_BETA_MIN)
+            --self->dynamic_beta_current;
+        else if (recent_wait < DYNAMIC_BETA_W_LOW && self->dynamic_beta_current < DYNAMIC_BETA_MAX)
+            ++self->dynamic_beta_current;
+        base = self->dynamic_beta_current;
+    }
+
+    // Adaptive β per level: scale linearly with bucket index
+    // High buckets (far XOR regions, large subtrees) get full β,
+    // low buckets (nearby, few nodes) get β=1.
+    if (adaptive_beta && max_height > 1) {
+        return std::max(size_t{1}, base * (bucket_index + 1) / max_height);
+    }
+
+    return base;
+}
+
+std::vector<NodeID> KadcastNode::select_delegates(size_t bucket_index, size_t max_height) const
+{
+    auto const& candidates = buckets.at(bucket_index);
+    if (candidates.empty())
         return {};
 
-    std::shuffle(delegates.begin(), delegates.end(), simulator.rng);
-    if (delegates.size() > redundancy_factor)
-        delegates.resize(redundancy_factor);
+    size_t beta = effective_beta(bucket_index, max_height);
+
+    // Hybrid delegate selection parameterized by proximity_alpha:
+    //   score = alpha * uniform_random + (1 - alpha) * normalized_prop_delay
+    // alpha=1.0 → pure random (standard KADcast)
+    // alpha=0.0 → pure proximity (nearest underlay delegates)
+    double max_dist = 0.0;
+    for (auto c : candidates) {
+        double d = simulator.get_path_distance(node_id, c);
+        if (d > max_dist)
+            max_dist = d;
+    }
+    if (max_dist < 1e-9)
+        max_dist = 1.0;
+
+    std::uniform_real_distribution<double> unif(0.0, 1.0);
+    std::vector<std::pair<double, NodeID>> scored;
+    scored.reserve(candidates.size());
+    for (auto c : candidates) {
+        double prop_norm = simulator.get_path_distance(node_id, c) / max_dist;
+        double score = proximity_alpha * unif(simulator.rng) + (1.0 - proximity_alpha) * prop_norm;
+        scored.push_back({ score, c });
+    }
+
+    std::sort(scored.begin(), scored.end());
+
+    std::vector<NodeID> delegates;
+    size_t count = std::min(scored.size(), beta);
+    for (size_t i = 0; i < count; ++i)
+        delegates.push_back(scored[i].second);
     return delegates;
 }
 
@@ -68,17 +127,17 @@ void KadcastNode::send_txn_to_delegate(std::shared_ptr<Txn> txn, NodeID delegate
 void KadcastNode::broadcast_block_via_kadcast(std::shared_ptr<Block> block, size_t max_height)
 {
     size_t upper_bound = std::min(max_height, lbit_width);
-    for (size_t bucket_index = 0; bucket_index < upper_bound; ++bucket_index)
-        for (auto delegate : select_delegates(bucket_index))
-            send_block_to_delegate(block, delegate, bucket_index);
+    for (size_t i = 0; i < upper_bound; ++i)
+        for (auto delegate : select_delegates(i, upper_bound))
+            send_block_to_delegate(block, delegate, i);
 }
 
 void KadcastNode::broadcast_txn_via_kadcast(std::shared_ptr<Txn> txn, size_t max_height)
 {
     size_t upper_bound = std::min(max_height, lbit_width);
-    for (size_t bucket_index = 0; bucket_index < upper_bound; ++bucket_index)
-        for (auto delegate : select_delegates(bucket_index))
-            send_txn_to_delegate(txn, delegate, bucket_index);
+    for (size_t i = 0; i < upper_bound; ++i)
+        for (auto delegate : select_delegates(i, upper_bound))
+            send_txn_to_delegate(txn, delegate, i);
 }
 
 void KadcastNode::receive(std::shared_ptr<Chunk> chunk, NodeID from)
@@ -103,7 +162,7 @@ void KadcastNode::receive(std::shared_ptr<Chunk> chunk, NodeID from)
             if (assembly.cached_delegates.empty()) {
                 size_t upper_bound = std::min(assembly.broadcast_height, lbit_width);
                 for (size_t bucket_index = 0; bucket_index < upper_bound; ++bucket_index)
-                    assembly.cached_delegates[bucket_index] = select_delegates(bucket_index);
+                    assembly.cached_delegates[bucket_index] = select_delegates(bucket_index, upper_bound);
             }
             // Relay this chunk to all cached delegates
             for (auto const& [bucket_index, delegates] : assembly.cached_delegates) {

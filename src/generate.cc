@@ -12,7 +12,7 @@
 #include <set>
 #include <stdexcept>
 
-std::set<std::shared_ptr<ClassicNode>> generate_nodes(Simulator& simulator, size_t nr_nodes, double z_0, double z_1, double cpu_ratio, double txn_interarrival_time_mean, double global_block_interarrival_time_mean, bool use_kadcast, size_t beta, std::mt19937& overlay_rng)
+std::set<std::shared_ptr<ClassicNode>> generate_nodes(Simulator& simulator, size_t nr_nodes, double z_0, double z_1, double cpu_ratio, double txn_interarrival_time_mean, double global_block_interarrival_time_mean, bool use_kadcast, size_t beta, double proximity_alpha, bool adaptive_beta, bool dynamic_beta, std::mt19937& overlay_rng)
 {
     std::set<std::shared_ptr<ClassicNode>> nodes;
 
@@ -60,7 +60,10 @@ std::set<std::shared_ptr<ClassicNode>> generate_nodes(Simulator& simulator, size
                     block_validation_throughput_kb_per_ms,
                     overlay_ids.at(overlay_id_index++),
                     lbit_width,
-                    beta));
+                    beta,
+                    proximity_alpha,
+                    adaptive_beta,
+                    dynamic_beta));
             } else {
                 nodes.insert(std::make_shared<ClassicNode>(
                     simulator,

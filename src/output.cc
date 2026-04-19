@@ -157,4 +157,17 @@ void write_stats_to_py_file(std::string filename, OutputStats stats)
         statfile << "traffic_per_node_kb=" << stats.total_traffic_kb / stats.nr_nodes << '\n';
         statfile << "messages_per_node=" << (double)stats.total_messages_sent / stats.nr_nodes << '\n';
     }
+
+    /*
+     * upload contention stats
+     */
+    statfile << "\n# --- Upload Contention Stats ---\n";
+    statfile << "contention_total_sends=" << stats.contention_total_sends << '\n';
+    statfile << "contention_queued_sends=" << stats.contention_queued_sends << '\n';
+    statfile << "contention_fraction=" << (stats.contention_total_sends > 0 ? (double)stats.contention_queued_sends / stats.contention_total_sends : 0.0) << '\n';
+    statfile << "contention_mean_wait_ms=" << stats.contention_mean_wait_ms << '\n';
+    statfile << "contention_p50_wait_ms=" << stats.contention_p50_wait_ms << '\n';
+    statfile << "contention_p90_wait_ms=" << stats.contention_p90_wait_ms << '\n';
+    statfile << "contention_p99_wait_ms=" << stats.contention_p99_wait_ms << '\n';
+    statfile << "contention_max_wait_ms=" << stats.contention_max_wait_ms << '\n';
 }

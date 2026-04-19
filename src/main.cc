@@ -27,9 +27,12 @@ int main(int argc, char const* argv[])
     std::string overlay_protocol;
     std::string graph_density = "dense";
     size_t beta = 3;
+    double alpha = 1.0;
+    bool adaptive_beta = false;
+    bool dynamic_beta = false;
     unsigned int graph_seed, simulator_seed;
-    if (argc < 9 || argc > 14) {
-        std::cerr << "Usage: " << argv[0] << " <nr_nodes> <z_0> <z_1> <cpu_ratio> <txn_interarrival_time_mean> <global_block_interarrival_time_mean> <duration> <overlay_protocol> [sparse|moderate|dense] [beta] [graph_seed simulator_seed]\n";
+    if (argc < 9 || argc > 17) {
+        std::cerr << "Usage: " << argv[0] << " <nr_nodes> <z_0> <z_1> <cpu_ratio> <txn_interarrival_time_mean> <global_block_interarrival_time_mean> <duration> <overlay_protocol> [sparse|moderate|dense] [beta] [alpha] [adaptive] [dynamic] [graph_seed simulator_seed]\n";
         return 0;
     } else {
         nr_nodes = std::stoull(argv[1]);
@@ -49,11 +52,28 @@ int main(int argc, char const* argv[])
         if (next_arg < argc) {
             try {
                 size_t val = std::stoull(argv[next_arg]);
-                if (val >= 1 && val <= 10) {
+                if (val >= 1 && val <= 200) {
                     beta = val;
                     next_arg++;
                 }
             } catch (...) {}
+        }
+        if (next_arg < argc) {
+            try {
+                double val = std::stod(argv[next_arg]);
+                if (val >= 0.0 && val <= 1.0) {
+                    alpha = val;
+                    next_arg++;
+                }
+            } catch (...) {}
+        }
+        if (next_arg < argc && std::string(argv[next_arg]) == "adaptive") {
+            adaptive_beta = true;
+            next_arg++;
+        }
+        if (next_arg < argc && std::string(argv[next_arg]) == "dynamic") {
+            dynamic_beta = true;
+            next_arg++;
         }
         if (next_arg + 1 < argc) {
             graph_seed = std::stoull(argv[next_arg]);
@@ -99,7 +119,7 @@ int main(int argc, char const* argv[])
     for (int i = 0; i < argc; ++i)
         logfile << argv[i] << " ";
     logfile << "***\n";
-    logfile << "*** graph_density=" << graph_density << " beta=" << beta << " ***\n";
+    logfile << "*** graph_density=" << graph_density << " beta=" << beta << " alpha=" << alpha << " adaptive_beta=" << adaptive_beta << " dynamic_beta=" << dynamic_beta << " ***\n";
 
     /*
      * graph random number generator
@@ -116,7 +136,7 @@ int main(int argc, char const* argv[])
     /*
      * generate nodes
      */
-    std::set<std::shared_ptr<ClassicNode>> nodes = generate_nodes(simulator, nr_nodes, z_0, z_1, cpu_ratio, txn_interarrival_time_mean, global_block_interarrival_time_mean, use_kadcast, beta, graph_rng);
+    std::set<std::shared_ptr<ClassicNode>> nodes = generate_nodes(simulator, nr_nodes, z_0, z_1, cpu_ratio, txn_interarrival_time_mean, global_block_interarrival_time_mean, use_kadcast, beta, alpha, adaptive_beta, dynamic_beta, graph_rng);
     std::set<NodeID> node_ids;
     std::map<NodeID, std::shared_ptr<ClassicNode>> node_id_to_node;
     for (auto node : nodes) {
@@ -365,6 +385,33 @@ int main(int argc, char const* argv[])
     output_stats.stale_blocks = output_stats.total_blocks > output_stats.longest_chain_length
         ? output_stats.total_blocks - output_stats.longest_chain_length
         : 0;
+
+    /*
+     * compute upload contention stats from raw wait times
+     */
+    {
+        auto wait_times = simulator.get_upload_wait_times();
+        output_stats.contention_total_sends = wait_times.size();
+        output_stats.contention_queued_sends = 0;
+        double sum = 0.0;
+        double max_wait = 0.0;
+        for (double w : wait_times) {
+            if (w > 0.0)
+                ++output_stats.contention_queued_sends;
+            sum += w;
+            if (w > max_wait)
+                max_wait = w;
+        }
+        output_stats.contention_mean_wait_ms = wait_times.empty() ? 0.0 : sum / wait_times.size();
+        output_stats.contention_max_wait_ms = max_wait;
+
+        std::sort(wait_times.begin(), wait_times.end());
+        size_t n = wait_times.size();
+        output_stats.contention_p50_wait_ms = n > 0 ? wait_times[std::min((size_t)(n * 0.50), n - 1)] : 0.0;
+        output_stats.contention_p90_wait_ms = n > 0 ? wait_times[std::min((size_t)(n * 0.90), n - 1)] : 0.0;
+        output_stats.contention_p99_wait_ms = n > 0 ? wait_times[std::min((size_t)(n * 0.99), n - 1)] : 0.0;
+    }
+
     write_stats_to_py_file(output_dir + "/stats.py", output_stats);
 
     return 0;

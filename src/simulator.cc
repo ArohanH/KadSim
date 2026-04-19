@@ -128,11 +128,13 @@ void Simulator::schedule_delivery_hop(NodeID logical_sender, std::shared_ptr<Sen
 {
     auto const& properties = link_properties.at(current_hop).at(next_hop);
 
-    // Per-hop queuing delay: models the inv/getdata protocol handshake,
-    // app-level processing, and store-and-forward overhead at each relay.
-    // Exp(mean=100ms) — covers inv/getdata RTT and processing overhead;
-    // Decker & Wattenhofer (2013) measured ~80ms per-hop overhead in Bitcoin.
-    std::exponential_distribution<double> exp_dist(1.0 / 100.0); // mean 100ms
+    // Fixed per-hop queuing delay for Classic flooding:
+    // Models the inv/getdata protocol handshake + app-level processing
+    // at each store-and-forward relay. Exp(mean=80ms) — covers the
+    // 3-message exchange (inv → getdata → payload) plus deserialization.
+    // Degree-driven congestion is captured separately by upload channel
+    // contention, so we do not scale this with node degree.
+    std::exponential_distribution<double> exp_dist(1.0 / 80.0); // mean 80ms
     double queuing_delay = exp_dist(rng);
 
     // Upload channel queuing: sender's uplink is shared across P channels
@@ -187,6 +189,11 @@ double Simulator::acquire_upload_slot(NodeID node, double send_time, double size
     auto min_it = std::min_element(slots.begin(), slots.end());
     double slot_free = *min_it;
     double start = std::max(send_time, slot_free);
+
+    // Track upload contention: how long the send had to wait for a free slot
+    double wait = std::max(0.0, slot_free - send_time);
+    upload_wait_times.push_back(wait);
+    per_node_upload_waits[node].push_back(wait);
 
     double speed = node_upload_speed.count(node) > 0 ? node_upload_speed.at(node) : 12.5;
     double per_channel_speed = speed / static_cast<double>(upload_parallelism);
@@ -273,6 +280,8 @@ void Simulator::init(double time)
     event_queue = std::priority_queue<std::shared_ptr<Event>, std::vector<std::shared_ptr<Event>>, EventComparator> {};
     current_time = time;
     node_upload_slots.clear();
+    upload_wait_times.clear();
+    per_node_upload_waits.clear();
     total_messages_sent = 0;
     total_traffic_kb = 0.0;
 }
