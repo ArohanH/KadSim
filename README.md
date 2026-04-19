@@ -13,12 +13,21 @@ make -j
 
 ### Run single simulation
 ```
-bin/kadsim <nr_nodes> <z_0> <z_1> <cpu_ratio> <txn_iat> <block_iat> <duration> <protocol> [density] [beta] [graph_seed sim_seed]
+bin/kadsim <nr_nodes> <z_0> <z_1> <cpu_ratio> <txn_iat> <block_iat> <duration> <protocol> [density] [beta] [alpha] [adaptive] [dynamic] [graph_seed sim_seed]
 ```
 
 ### Run paired experiment (Classic + KADcast, with analysis)
 ```
-python3 run_experiment.py <nr_nodes> <z_0> <z_1> <cpu_ratio> <txn_iat> <block_iat> <duration> [density] [beta] [graph_seed sim_seed]
+python3 run_experiment.py <nr_nodes> <z_0> <z_1> <cpu_ratio> <txn_iat> <block_iat> <duration> [density] [beta] [alpha] [adaptive] [dynamic] [graph_seed sim_seed]
+```
+
+### Examples
+```
+# Run KADcast with proximity alpha=0.5 and dynamic beta enabled
+python3 run_experiment.py 800 0.5 0.5 10 10000 600 40000 dense 3 0.5 dynamic 42 42
+
+# Run KADcast with adaptive and dynamic beta enabled
+python3 run_experiment.py 800 0.5 0.5 10 10000 600 40000 dense 3 0.5 adaptive dynamic 42 42
 ```
 
 ### Parameters
@@ -35,6 +44,9 @@ python3 run_experiment.py <nr_nodes> <z_0> <z_1> <cpu_ratio> <txn_iat> <block_ia
 | `protocol` | `Classic` or `Kadcast` |
 | `density` | Graph density: `sparse`, `moderate`, or `dense` (default: `dense`) |
 | `beta` | KADcast redundancy parameter β ∈ [1, 10] (default: 3) |
+| `alpha` | KADcast proximity/random delegate selection weight (0.0 = proximity, 1.0 = uniform random; default: 1.0) |
+| `adaptive` | Optional flag to enable adaptive per-level β scaling in KADcast |
+| `dynamic` | Optional flag to enable dynamic AIMD β control in KADcast |
 | `graph_seed` | RNG seed for network topology generation |
 | `sim_seed` | RNG seed for simulation events |
 
